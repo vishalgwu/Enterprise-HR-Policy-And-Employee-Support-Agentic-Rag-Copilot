@@ -20,13 +20,48 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Groq LLM client (`openai/gpt-oss-20b`, temperature 0) | Implemented, live call verified |
 | Tavily web-search client | Implemented, live call verified |
 | Structured routing + evidence grading | Implemented, 21/21 on a labelled set |
-| LangGraph agent (grade → rewrite → web-search fallback) | Specified, not yet built |
+| LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
 | FastAPI service | Not yet built |
 | HTML/CSS/JS frontend | Not yet built |
 
-The fallback behaviour is currently **documented and encoded in the knowledge base**, and the
-retrieval layer emits the signal it needs (an empty result set for out-of-domain questions). The
-graph that consumes that signal is the next milestone.
+The agent graph is complete and runs end to end. What remains is exposing it over HTTP and
+putting a UI in front of it.
+
+## The agent graph
+
+Ten nodes in [Rag/graph.py](Rag/graph.py). The graph never answers from model memory: every
+answer is traceable to internal policy, to cited web results, or to an explicit admission that
+neither had the evidence.
+
+```
+START → route
+  direct  ─────────────────────────────────────────► direct_answer          → END
+  kb      → retrieve_kb → grade_kb
+                            good ──────────────────► generate_from_kb       → END
+                            weak → search_web → grade_web
+                                                 good ► generate_from_web   → END
+                                                 weak → retries left?
+                                                          yes → rewrite_query ─┐
+                                                          no  ► answer_insufficient → END
+                                                                                │
+                            ◄───────────────────────────────────────────────────┘
+                            (rewrite returns to the private KB, not to the web)
+```
+
+**A rewrite loops back to the KB, not to web search.** A weak retrieval is usually a vocabulary
+mismatch between how an employee phrases a question and how policy is written, so the rewritten
+query deserves another look at internal policy before falling back to public sources. `retry_count`
+bounds the loop at `MAX_RETRIES = 1`.
+
+Verified live, all four terminal paths plus the loop:
+
+| Path | Result |
+|---|---|
+| `"hi there"` | `direct` |
+| `"How many PTO days do I get per year?"` | `private_kb`, answers 20 days, cites the source file |
+| `"Who won the football World Cup in 2022?"` | KB returns 0 chunks → `web_search`, flagged as public info, not policy |
+| KB and web both empty (injected) | one rewrite, then `insufficient_evidence`; loop terminates |
+| KB empty then populated (injected) | recovers to `private_kb` after the rewrite |
 
 ---
 
@@ -151,6 +186,16 @@ first run (384-d, cosine, serverless).
 ```bash
 python Rag/Agentic_rag.py     # ingest the public HR article  -> default namespace
 python Rag/private_kb.py      # ingest the private KB + retrieval demo -> "private-kb"
+python Rag/graph.py           # run the agent over sample questions
+```
+
+Ask a single question:
+
+```python
+from Rag.graph import ask
+
+final = ask("How many PTO days do I get per year?")
+print(final["source_used"], final["answer"])
 ```
 
 Both ingests are idempotent — chunk ids are derived from `source` + `start_index`, so re-running
@@ -166,6 +211,7 @@ Rag/clients.py        embeddings (cached), Groq chat model, Tavily search
 Rag/loaders.py        web + markdown loading, chunking, chunk ids, evidence rendering
 Rag/vectorstore.py    Pinecone index management and retrieval, parameterised by namespace
 Rag/schemas.py        structured routing/grading decisions, AgentState
+Rag/graph.py          the 10-node LangGraph agent
 
 Rag/Agentic_rag.py    entry point: public web corpus
 Rag/private_kb.py     entry point: private KB
@@ -242,17 +288,16 @@ forever; it is now capped and raises.
 
 ## Roadmap
 
-1. LangGraph agent wiring the pieces together: retrieve → grade → rewrite → Tavily fallback →
-   answer with citations. The retriever, the grading LLM and the web-search tool all exist; the
-   graph that sequences them does not.
-2. FastAPI service exposing the graph
-3. Web frontend
-4. Expand the private KB beyond markdown — `pypdf` and `python-docx` are already pinned
+1. FastAPI service exposing the graph
+2. Web frontend
+3. Expand the private KB beyond markdown — `pypdf` and `python-docx` are already pinned
+4. Conversation memory, so follow-up questions resolve against the previous turn
 
 ## Tech stack
 
-Python 3.13 · LangChain · Pinecone serverless · sentence-transformers (all-MiniLM-L6-v2) ·
-Groq (`openai/gpt-oss-20b`) · Tavily · BeautifulSoup · LangGraph *(planned)* · FastAPI *(planned)*
+Python 3.13 · LangChain · LangGraph · Pinecone serverless · sentence-transformers
+(all-MiniLM-L6-v2) · Groq (`openai/gpt-oss-20b`) · Tavily · Pydantic · BeautifulSoup ·
+FastAPI *(planned)*
 
 ## License
 

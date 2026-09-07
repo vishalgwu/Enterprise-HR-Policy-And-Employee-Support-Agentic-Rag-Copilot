@@ -48,7 +48,10 @@ __all__ = [
 
 Route = Literal["kb", "direct"]
 Grade = Literal["good", "weak"]
-SourceUsed = Literal["kb", "web", "direct", "none"]
+# Provenance of the finished answer, kept separate from `route`: the router's
+# choice and what actually produced the answer are different facts, and a run
+# that routes to "kb" can still end up answering from the web.
+SourceUsed = Literal["private_kb", "web_search", "direct", "insufficient_evidence"]
 
 # One rewrite-and-retry before escalating to web search. Higher values mostly
 # buy latency: if a rewrite does not fix retrieval, a second rarely does.
@@ -93,6 +96,7 @@ class AgentState(TypedDict):
     question: str
     current_query: str
     retry_count: int
+    route: NotRequired[Route]
     kb_docs: NotRequired[List[Document]]
     web_results: NotRequired[str]
     kb_grade: NotRequired[Grade]
@@ -111,13 +115,17 @@ ROUTER_PROMPT = ChatPromptTemplate.from_messages(
         (
             "system",
             "You route messages for an internal HR assistant.\n"
-            "Answer 'kb' when the message asks about company policy, benefits, "
-            "leave, pay, expenses, conduct, or how the assistant itself works "
-            "-- anything that needs internal documents.\n"
-            "Answer 'direct' for greetings, thanks, farewells, and small talk "
-            "that needs no policy lookup.\n"
-            "When unsure, answer 'kb': a needless lookup is cheaper than "
-            "answering a policy question from memory.",
+            "Answer 'direct' for messages that need no evidence lookup: "
+            "greetings, thanks, farewells, small talk, and questions about who "
+            "or what this assistant is and what it can help with.\n"
+            "Answer 'kb' for every message seeking a fact -- company policy, "
+            "benefits, leave, pay, expenses, conduct, and equally any question "
+            "about the outside world. Downstream stages check whether the "
+            "knowledge base covers it and fall back to web search when it does "
+            "not, so routing to 'kb' is never wasted.\n"
+            "Never route an external factual question to 'direct': that makes "
+            "the assistant answer from memory with no evidence behind it, which "
+            "is the one thing it must not do.",
         ),
         ("human", "{question}"),
     ]

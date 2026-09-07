@@ -48,6 +48,28 @@ def get_llm(model: str | None = None,
     return ChatGroq(model=model or config.GROQ_MODEL, temperature=temperature)
 
 
+def web_results_to_text(result) -> str:
+    """Flatten a Tavily response into text a grader and a prompt can consume.
+
+    Tavily returns a dict (`answer`, `results`, ...) rather than Documents, and
+    the shape varies with package version, so this tolerates a bare string too.
+    """
+    if not isinstance(result, dict):
+        return str(result or "")
+
+    lines = []
+    answer = result.get("answer")
+    if answer:
+        lines.append(f"Tavily answer: {answer}")
+    for item in result.get("results") or []:
+        lines.append(
+            f"Title: {item.get('title', '')}\n"
+            f"URL: {item.get('url', '')}\n"
+            f"Content: {item.get('content', '')}"
+        )
+    return "\n\n".join(lines) if lines else ""
+
+
 def get_web_search(max_results: int = config.WEB_SEARCH_MAX_RESULTS) -> TavilySearch:
     """Tavily search: the fallback when the private KB has nothing relevant.
 

@@ -132,6 +132,22 @@ serving withdrawn policy. Only the private namespace is reconciled; the public w
 `describe_index_stats` after ingest because a retrieval fired immediately after an upsert returns
 nothing. Do not drop this when refactoring ingest.
 
+**Graph nodes are closures, built once per graph.** `build_nodes` takes the LLM, retriever and
+search tool and closes over them, so a run constructs each once and tests can inject fakes —
+that is how the rewrite loop and the insufficient-evidence path are tested deterministically,
+without waiting for a real question that happens to fail twice.
+
+**The router prompt is a two-sided calibration; changing one side breaks the other.** It must send
+external factual questions to `kb` (otherwise the model answers from memory with no evidence) while
+keeping greetings *and questions about the assistant itself* on `direct`. An earlier version pushed
+everything informational to `kb`; `"who are you?"` then retrieved nothing, fell through to web
+search, and answered from an unrelated web page. Re-test both classes after any edit to it.
+
+**`temperature=0` is not determinism on Groq.** Repeated grading of a genuinely borderline case
+("the KB covers employees, the question asks about contractors") returned `weak` 8/8 in isolation
+but flipped to `good` once inside a longer suite run. Treat single-run grader accuracy as
+approximate, and do not chase a one-off flip as a prompt bug.
+
 **Never use `method="json_mode"` for the decision models.** It is unconstrained JSON and this model
 fills the enum field with prose — a route query came back as
 `{"route": "Employees accrue 1.5 days of PTO per month..."}`, which is exactly the failure
