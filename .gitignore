@@ -1,0 +1,27 @@
+# Secrets -- never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+hr/
+venv/
+.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+
+# Editors / IDEs
+.idea/
+.vscode/
+.cursor/
+
+# Local logs and scratch output
+*.log

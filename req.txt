@@ -1,20 +1,39 @@
+# Enterprise HR Agentic RAG Copilot -- pinned dependencies.
+# Grouped by whether the code imports them today. Verified against the working
+# venv; `pip install -r req.txt` reproduces a runnable environment.
+
+# --- Core: imported by Rag/ today --------------------------------------------
+langchain-core==1.6.1
+langchain-community==0.4.2          # WebBaseLoader
+langchain-text-splitters==1.1.2
+langchain-huggingface==1.2.2        # local embeddings
+langchain-pinecone==0.2.13
+langchain-groq==1.1.3               # chat model
+langchain-tavily==0.2.18            # web-search fallback
+sentence-transformers==6.0.1        # pulls torch (~2.5 GB on first install)
+pinecone==7.3.0
+pydantic==2.13.5                    # structured decision models
+typing-extensions==4.16.0           # TypedDict / NotRequired
+python-dotenv==1.1.1
+beautifulsoup4==4.14.3
+lxml==5.3.0
+
+# --- Next milestone: the agent graph -----------------------------------------
+langgraph==1.1.10
+
+# --- Planned: FastAPI service and frontend -----------------------------------
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
 jinja2==3.1.6
 python-multipart==0.0.20
 pydantic-settings==2.10.1
 
-langgraph==1.1.10
-langchain-core==1.6.1
-langchain-community==0.4.2
-langchain-openai==1.6.0
-langchain-tavily==0.2.18
-langchain-pinecone==0.2.13
-langchain-text-splitters==1.1.2
-
-pinecone==7.3.0
-openai==3.3.1
-
+# --- Planned: PDF / DOCX ingestion for the private KB ------------------------
 pypdf==6.16.2
 python-docx==1.2.0
-python-dotenv==1.1.1
+
+# Unpinned on purpose: openai, langchain-openai and langchain. No module here
+# imports them -- generation and grading run on Groq -- but they still get
+# installed, because langchain-pinecone requires langchain-openai (which requires
+# openai) and langchain-tavily requires langchain. Pinning them directly implied
+# this project chose them. Do not uninstall them; pip check will break.
