@@ -281,6 +281,16 @@ class Settings(BaseSettings):
         default=PROJECT_ROOT / "data" / "audit.db", validation_alias="AUDIT_DB_PATH"
     )
 
+    # The UI. Settings rather than fixed paths for the same reason as the rest:
+    # the target architecture serves these from an Nginx container that does not
+    # have the Python package, and a test needs to point them at tmp_path.
+    templates_dir: Path = Field(
+        default=PROJECT_ROOT / "templates", validation_alias="TEMPLATES_DIR"
+    )
+    static_dir: Path = Field(
+        default=PROJECT_ROOT / "static", validation_alias="STATIC_DIR"
+    )
+
     # --- Observability -------------------------------------------------------
     # LangSmith tracing is declared here rather than left to the environment,
     # because it has to be a decision rather than an accident. Tracing uploads

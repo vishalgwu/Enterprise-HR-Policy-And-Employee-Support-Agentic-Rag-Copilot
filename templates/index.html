@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>{{ app_name }}</title>
+  <meta name="description" content="Answers employee HR questions from approved internal policy, with the evidence and the decision path shown." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#129504;</text></svg>" />
+</head>
+
+<body
+  data-env="{{ app_env }}"
+  data-admin="{{ 'on' if admin_enabled else 'off' }}"
+  data-version="{{ version }}"
+>
+  <!-- Decorative only: a slow gradient mesh and a grain overlay. Both are
+       pointer-events:none and aria-hidden so they never touch the reading
+       order or intercept a click. -->
+  <div class="aurora" aria-hidden="true">
+    <span class="aurora__blob aurora__blob--a"></span>
+    <span class="aurora__blob aurora__blob--b"></span>
+    <span class="aurora__blob aurora__blob--c"></span>
+  </div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <div class="shell">
+
+    <!-- ── Rail ─────────────────────────────────────────────────────────── -->
+    <aside class="rail">
+      <div class="rail__mark" title="{{ app_name }}">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2 3 6.5v7c0 5 3.9 8.2 9 8.5 5.1-.3 9-3.5 9-8.5v-7L12 2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+          <path d="M8.5 12.2 11 14.7l4.6-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+      <nav class="rail__nav" aria-label="Sections">
+        <button class="rail__btn is-active" data-view="chat" aria-current="page">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.9 9.9 0 0 1-3.4-.6L3 21l1.9-4.9A8.2 8.2 0 0 1 3.6 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8.4 8.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span class="rail__label">Ask</span>
+        </button>
+        <button class="rail__btn" data-view="knowledge" data-admin-only>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="rail__label">Ingest</span>
+        </button>
+        <button class="rail__btn" data-view="audit" data-admin-only>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19V6a2 2 0 0 1 2-2h8l6 6v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 4v6h6M8 14h6M8 17h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="rail__label">Audit</span>
+        </button>
+      </nav>
+
+      <div class="rail__foot">
+        <button class="rail__btn rail__btn--ghost" id="theme-toggle" title="Switch theme">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 13.5A9 9 0 0 1 10.5 3a9 9 0 1 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span class="rail__label">Theme</span>
+        </button>
+        <button class="rail__btn rail__btn--ghost" id="admin-open" title="Admin key">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.5 9.5a4 4 0 1 0-3.2 3.9L13 15l2 .3.3 2L17 19l3-3-5.5-5.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span class="rail__label">Key</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ── Stage ────────────────────────────────────────────────────────── -->
+    <div class="stage">
+
+      <header class="topbar">
+        <div class="topbar__id">
+          <h1 class="topbar__title">{{ app_name }}</h1>
+          <p class="topbar__sub">Agentic RAG over approved internal policy</p>
+        </div>
+        <div class="topbar__meta">
+          <span class="chip chip--env" data-env="{{ app_env }}">{{ app_env }}</span>
+          <span class="chip chip--ver">v{{ version }}</span>
+          <button class="pill pill--health" id="health-pill" type="button" title="Deployment health">
+            <span class="pulse" id="health-dot"></span>
+            <span id="health-text">checking…</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="views">
+
+        <!-- ══ CHAT ══════════════════════════════════════════════════════ -->
+        <section class="view is-active" id="view-chat">
+          <div class="chat">
+
+            <div class="thread" id="thread" aria-live="polite">
+              <div class="welcome" id="welcome">
+                <div class="welcome__glow" aria-hidden="true"></div>
+                <p class="welcome__kicker">Grounded, graded, and shown its working</p>
+                <h2 class="welcome__title">
+                  Ask about <span class="grad">leave, pay, benefits</span><br />or anything else in the handbook.
+                </h2>
+                <p class="welcome__body">
+                  Every answer names the policy document it came from. When internal policy does not
+                  cover a question, the agent says so instead of inventing one.
+                </p>
+                <div class="suggest" id="suggest">
+                  <button class="suggest__item" data-q="How many PTO days do I get per year?">
+                    <span class="suggest__emoji">🌴</span>How many PTO days do I get per year?
+                  </button>
+                  <button class="suggest__item" data-q="What is the notice period if I resign?">
+                    <span class="suggest__emoji">📮</span>What is the notice period if I resign?
+                  </button>
+                  <button class="suggest__item" data-q="How do I claim travel expenses?">
+                    <span class="suggest__emoji">🧾</span>How do I claim travel expenses?
+                  </button>
+                  <button class="suggest__item" data-q="What are the core working hours?">
+                    <span class="suggest__emoji">⏰</span>What are the core working hours?
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <form class="composer" id="composer" autocomplete="off">
+              <div class="composer__box">
+                <textarea
+                  id="question"
+                  class="composer__input"
+                  rows="1"
+                  maxlength="3000"
+                  placeholder="Ask about a policy…  (Enter to send, Shift+Enter for a new line)"
+                  aria-label="Your question"
+                ></textarea>
+                <div class="composer__actions">
+                  <span class="composer__count" id="char-count">0 / 3000</span>
+                  <button type="submit" class="btn btn--send" id="send" disabled>
+                    <span class="btn__label">Ask</span>
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 12 16-8-6 8 6 8-16-8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+                  </button>
+                </div>
+              </div>
+              <p class="composer__hint">
+                Answers come from your organisation's approved knowledge base. Verify anything
+                you are about to act on with HR.
+              </p>
+            </form>
+          </div>
+
+          <!-- ── Inspector ────────────────────────────────────────────── -->
+          <aside class="inspector" id="inspector">
+            <div class="inspector__tabs" role="tablist">
+              <button class="tab is-active" role="tab" data-tab="graph">Workflow</button>
+              <button class="tab" role="tab" data-tab="trace">Trace</button>
+              <button class="tab" role="tab" data-tab="sources">Sources</button>
+            </div>
+
+            <!-- Workflow ------------------------------------------------- -->
+            <div class="panel is-active" id="panel-graph" role="tabpanel">
+              <div class="panel__head">
+                <h3>Decision graph</h3>
+                <p>The path this answer actually took.</p>
+              </div>
+
+              <svg class="graph" id="graph" viewBox="0 0 400 500" role="img"
+                   aria-label="The ten-node agent graph, with the path taken highlighted">
+                <defs>
+                  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                          markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M0 0 10 5 0 10z" fill="currentColor" />
+                  </marker>
+                </defs>
+
+                <g class="graph__edges" fill="none" stroke-width="1.6" marker-end="url(#arrow)">
+                  <path data-edge="start-route"          d="M200 24 L200 43" />
+                  <path data-edge="route-direct"         d="M200 75 C200 100 76 96 76 107" />
+                  <path data-edge="route-retrieve"       d="M200 75 C200 100 296 96 296 107" />
+                  <path data-edge="retrieve-gradekb"     d="M296 139 L296 171" />
+                  <path data-edge="gradekb-genkb"        d="M296 203 C296 228 168 224 168 235" />
+                  <path data-edge="gradekb-web"          d="M296 203 L296 235" />
+                  <path data-edge="web-gradeweb"         d="M296 267 L296 299" />
+                  <path data-edge="gradeweb-genweb"      d="M296 331 C296 356 168 352 168 363" />
+                  <path data-edge="gradeweb-rewrite"     d="M296 331 L296 363" />
+                  <path data-edge="gradeweb-insufficient" d="M240 316 C130 326 76 372 76 427" />
+                  <path data-edge="rewrite-retrieve"     d="M352 380 C378 380 380 360 380 252 C380 160 378 124 352 124" />
+                </g>
+
+                <g class="graph__nodes">
+                  <circle class="graph__start" cx="200" cy="18" r="5" />
+
+                  <g class="node" data-node="route">
+                    <rect x="144" y="45" width="112" height="30" rx="15" />
+                    <text x="200" y="64">route</text>
+                  </g>
+                  <g class="node" data-node="direct" data-terminal="1">
+                    <rect x="20" y="109" width="112" height="30" rx="15" />
+                    <text x="76" y="128">direct answer</text>
+                  </g>
+                  <g class="node" data-node="retrieve">
+                    <rect x="240" y="109" width="112" height="30" rx="15" />
+                    <text x="296" y="128">retrieve kb</text>
+                  </g>
+                  <g class="node" data-node="gradekb">
+                    <rect x="240" y="173" width="112" height="30" rx="15" />
+                    <text x="296" y="192">grade kb</text>
+                  </g>
+                  <g class="node" data-node="genkb" data-terminal="1">
+                    <rect x="112" y="237" width="112" height="30" rx="15" />
+                    <text x="168" y="256">answer · kb</text>
+                  </g>
+                  <g class="node" data-node="web">
+                    <rect x="240" y="237" width="112" height="30" rx="15" />
+                    <text x="296" y="256">search web</text>
+                  </g>
+                  <g class="node" data-node="gradeweb">
+                    <rect x="240" y="301" width="112" height="30" rx="15" />
+                    <text x="296" y="320">grade web</text>
+                  </g>
+                  <g class="node" data-node="genweb" data-terminal="1">
+                    <rect x="112" y="363" width="112" height="30" rx="15" />
+                    <text x="168" y="382">answer · web</text>
+                  </g>
+                  <g class="node" data-node="rewrite">
+                    <rect x="240" y="363" width="112" height="30" rx="15" />
+                    <text x="296" y="382">rewrite query</text>
+                  </g>
+                  <g class="node" data-node="insufficient" data-terminal="1">
+                    <rect x="20" y="427" width="112" height="30" rx="15" />
+                    <text x="76" y="446">no evidence</text>
+                  </g>
+                </g>
+              </svg>
+
+              <ul class="legend">
+                <li><i class="dot dot--taken"></i>visited</li>
+                <li><i class="dot dot--idle"></i>not taken</li>
+                <li><i class="dot dot--term"></i>terminal</li>
+              </ul>
+
+              <div class="verdict" id="verdict" hidden>
+                <div class="verdict__row"><span>Route</span><b id="v-route">—</b></div>
+                <div class="verdict__row"><span>KB grade</span><b id="v-kb">—</b></div>
+                <div class="verdict__row"><span>Web grade</span><b id="v-web">—</b></div>
+                <div class="verdict__row"><span>Chunks</span><b id="v-chunks">—</b></div>
+                <div class="verdict__row"><span>Rewrites</span><b id="v-retry">—</b></div>
+                <div class="verdict__row"><span>Latency</span><b id="v-latency">—</b></div>
+              </div>
+            </div>
+
+            <!-- Trace ---------------------------------------------------- -->
+            <div class="panel" id="panel-trace" role="tabpanel">
+              <div class="panel__head">
+                <h3>Execution trace</h3>
+                <p>One entry per node, in the order they ran.</p>
+              </div>
+              <ol class="trace" id="trace"></ol>
+              <p class="empty" id="trace-empty">Ask something and the agent's steps land here.</p>
+            </div>
+
+            <!-- Sources -------------------------------------------------- -->
+            <div class="panel" id="panel-sources" role="tabpanel">
+              <div class="panel__head">
+                <h3>Evidence</h3>
+                <p>The documents the answer rests on.</p>
+              </div>
+              <div class="sources" id="sources"></div>
+              <p class="empty" id="sources-empty">No citations yet.</p>
+            </div>
+          </aside>
+        </section>
+
+        <!-- ══ KNOWLEDGE ═════════════════════════════════════════════════ -->
+        <section class="view" id="view-knowledge">
+          <div class="pane">
+            <header class="pane__head">
+              <h2>Add to the knowledge base</h2>
+              <p>
+                Uploads go straight into the private namespace the copilot answers from. Whoever can
+                upload here can change what company policy appears to say — so this is admin only.
+              </p>
+            </header>
+
+            <div class="drop" id="drop" tabindex="0" role="button"
+                 aria-label="Choose a document to upload">
+              <input type="file" id="file" accept=".md,.markdown,.txt,.pdf,.docx" hidden />
+              <div class="drop__ring" aria-hidden="true"></div>
+              <div class="drop__inner">
+                <div class="drop__icon">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+                </div>
+                <p class="drop__title">Drop a policy here</p>
+                <p class="drop__sub">or <u>browse</u> — md, txt, pdf, docx</p>
+                <p class="drop__file" id="drop-file" hidden></p>
+              </div>
+            </div>
+
+            <div class="upload-form">
+              <label class="field">
+                <span class="field__label">Department</span>
+                <input type="text" id="department" value="general" maxlength="64"
+                       placeholder="general" />
+                <span class="field__hint">Becomes a retrieval filter. Lowercase, no spaces.</span>
+              </label>
+              <button class="btn btn--primary" id="do-upload" disabled>
+                <span class="btn__label">Index document</span>
+              </button>
+            </div>
+
+            <div class="receipts" id="receipts"></div>
+          </div>
+        </section>
+
+        <!-- ══ AUDIT ═════════════════════════════════════════════════════ -->
+        <section class="view" id="view-audit">
+          <div class="pane">
+            <header class="pane__head pane__head--row">
+              <div>
+                <h2>Audit log</h2>
+                <p>Every answered question, with the decisions that produced it.</p>
+              </div>
+              <button class="btn btn--ghost" id="audit-refresh">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                <span class="btn__label">Refresh</span>
+              </button>
+            </header>
+
+            <div class="stats" id="stats"></div>
+
+            <div class="table-wrap">
+              <table class="table" id="audit-table">
+                <thead>
+                  <tr>
+                    <th>#</th><th>Asked</th><th>Question</th>
+                    <th>Source</th><th>Grades</th><th>ms</th>
+                  </tr>
+                </thead>
+                <tbody id="audit-body"></tbody>
+              </table>
+            </div>
+            <p class="empty" id="audit-empty">Nothing logged yet.</p>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- ── Admin key dialog ───────────────────────────────────────────────── -->
+  <dialog class="dialog" id="admin-dialog">
+    <form method="dialog" class="dialog__body" id="admin-form">
+      <h3>Admin key</h3>
+      <p>
+        Needed for uploading documents and reading the audit log. Held in this tab only
+        (<code>sessionStorage</code>) and sent as an <code>X-Admin-Key</code> header — closing the
+        tab forgets it.
+      </p>
+      <input type="password" id="admin-key" placeholder="X-Admin-Key" autocomplete="off" />
+      <div class="dialog__actions">
+        <button class="btn btn--ghost" value="cancel" type="submit">Cancel</button>
+        <button class="btn btn--primary" value="save" type="submit" id="admin-save">Save key</button>
+      </div>
+      <button class="dialog__clear" type="button" id="admin-clear">Forget the stored key</button>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="/static/js/app.js" defer></script>
+</body>
+</html>

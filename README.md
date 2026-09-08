@@ -25,19 +25,19 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 195 tests, no network, no credentials | Implemented |
+| Test suite — 200 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
 | FastAPI service | `/health`, `/api/chat`, `/api/upload`, `/api/audit` implemented |
 | SQLite audit layer (question, answer, decisions, trace, latency) | Implemented |
-| Feedback capture and an admin console | Not yet built |
-| HTML/CSS/JS frontend | Not yet built |
+| Browser console — chat, workflow graph, trace, evidence, upload, audit | Implemented |
+| Feedback capture | Not yet built |
 | Docker + DigitalOcean deployment | Not yet built |
 
-The agent graph runs end to end behind an HTTP surface: employees POST to `/api/chat`, HR staff
-upload policy through `/api/upload`, and every answered question is written to a SQLite audit log
-readable at `/api/audit`. What remains is feedback capture, a UI, and packaging.
+The agent graph runs end to end behind an HTTP surface and a browser console: employees ask at `/`,
+HR staff upload policy through the same UI, and every answered question is written to a SQLite audit
+log the console renders. What remains is feedback capture and packaging.
 
 The reference brief and target architecture this is built against are in
 [docs/](docs/): `Enterprise_HR_Agentic_RAG_Problem_Statement_DigitalOcean.pdf` and
@@ -113,6 +113,53 @@ Verified live, all four terminal paths plus the loop:
 | `"Who won the football World Cup in 2022?"` | KB returns 0 chunks → `web_search`, flagged as public info, not policy |
 | KB and web both empty (injected) | one rewrite, then `insufficient_evidence`; loop terminates |
 | KB empty then populated (injected) | recovers to `private_kb` after the rewrite |
+
+---
+
+## The console
+
+A single page at `/`, served by the same application that serves the API — so it is same-origin and
+this deployment carries no CORS middleware. No framework and no build step: one Jinja2 template, one
+stylesheet, one script, which is what lets the target architecture's Nginx container serve
+`static/` unchanged.
+
+Three views behind a rail: **Ask**, **Ingest** and **Audit**. The last two only appear when an admin
+key is configured — a courtesy, not the gate; `require_admin` refuses on every request regardless.
+
+**Ask** is the chat, with an inspector beside it that answers the question *"why should I believe
+this?"* three ways:
+
+- **Workflow** — the ten-node graph, with the path this answer actually took lit up and the edges
+  animated in the order they were traversed. The highlight is derived from the trace, so it cannot
+  disagree with what ran. Underneath it, the route, both grades, the chunk count, the rewrite count
+  and the round-trip latency.
+- **Trace** — one entry per node in execution order, colour-coded: green for a `good` grade, amber
+  for `weak`, red for a degraded call. A run that fell back to the web because Pinecone was down
+  looks identical to one that fell back because the evidence was weak — the trace is the only place
+  that says which.
+- **Evidence** — the cited documents, with department and type, and any external URLs kept visually
+  distinct from internal policy.
+
+The answer itself carries a badge naming its provenance in plain language — *internal policy*,
+*public web*, *no reliable evidence* — plus each grade and a chip per cited file.
+
+**Ingest** is a dropzone over `POST /api/upload`. A finished upload prints a receipt: file,
+department, namespace, chunk count and how many vectors the namespace now holds.
+
+**Audit** renders `/api/audit` and `/api/audit/stats` — the answered-question log with per-source
+counts and the grounded rate as a meter.
+
+Both themes are first-class; the toggle swaps a dozen custom properties rather than restyling
+anything. Everything animated is decorative and the whole stylesheet stands down under
+`prefers-reduced-motion`.
+
+**The console never assigns untrusted content to `innerHTML`.** Answer text comes from an LLM,
+citation titles from uploaded documents, audit rows from the database — and the admin reading the
+audit log is exactly the session worth stealing. Every dynamic string reaches the page through
+`textContent`, and the small markdown renderer *builds* `<strong>` and `<code>` elements instead of
+parsing markup, so there is no escaping step that can be forgotten. The admin key lives in
+`sessionStorage` (tab-scoped, gone when the tab closes) and travels in the `X-Admin-Key` header,
+never in a URL.
 
 ---
 
@@ -507,7 +554,7 @@ python scripts/inspect_document.py    # load + chunk one file, offline, no keys
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
 
-pytest                                # 195 tests, no network, no credentials
+pytest                                # 200 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -580,12 +627,16 @@ app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
 app/services/audit.py     AuditStore -- the SQLite record of every answered question
 app/api/deps.py           what a route depends on, read off app.state
 app/api/routes.py         the ops (/health) and api (/api/*) routers
-app/main.py               create_app -- builds the app, wires services onto app.state
+app/main.py               create_app -- builds the app, wires services, mounts /static
+
+templates/index.html      the console: chat, workflow graph, trace, evidence, upload, audit
+static/css/style.css      design tokens, components, dark and light
+static/js/app.js          the console's behaviour -- no framework, no build step
 
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    195 tests over fakes -- no network, no credentials
+tests/                    200 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below
@@ -776,12 +827,11 @@ Two deliberate deviations from step.md, both already in the code:
 
 1. Feedback capture — a thumbs-up/down against an `audit_id`, and an admin view over it
 2. Document metadata in SQLite, so `/api/audit` can answer "which policy version said that?"
-3. HTML/CSS/JS frontend: chat with citations and a visible execution trace
-4. Docker + DigitalOcean: FastAPI app, Nginx frontend, ingestion worker, SQLite volume
-5. Conversation memory, so follow-up questions resolve against the previous turn
+3. Docker + DigitalOcean: FastAPI app, Nginx frontend, ingestion worker, SQLite volume
+4. Conversation memory, so follow-up questions resolve against the previous turn
 
-Done since: `/api/chat` over `Copilot.ask`, `/api/upload` for authorised HR staff, and the SQLite
-audit layer behind `/api/audit`.
+Done since: `/api/chat` over `Copilot.ask`, `/api/upload` for authorised HR staff, the SQLite audit
+layer behind `/api/audit`, and the browser console at `/`.
 
 ## Tech stack
 

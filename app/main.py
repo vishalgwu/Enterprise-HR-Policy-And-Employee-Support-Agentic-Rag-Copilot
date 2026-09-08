@@ -2,8 +2,13 @@
 
 The routes themselves live in `app.api.routes`, one router per audience: `ops`
 is unprefixed and open (`/health`), `api` is prefixed `/api` and holds `/chat`
-plus the admin-only `/upload` and `/audit`. This module only builds the
-application and decides what the routes get to depend on.
+plus the admin-only `/upload` and `/audit`, and `pages` serves the console at
+`/`. This module only builds the application and decides what the routes get to
+depend on.
+
+The console is served from this same application, which is what makes it
+same-origin with the API -- so there is no CORS middleware here, deliberately.
+Adding one would widen the surface for a request nobody is making.
 
 Both an app *factory* and a module-level instance, and both are needed:
 
@@ -28,14 +33,21 @@ that cost at startup than on the first employee's question.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 from app import __version__
 from app.api.routes import api as api_router
 from app.api.routes import ops as ops_router
-from app.core.config import Settings, configure_logging, get_settings
+from app.api.routes import pages as pages_router
+from app.core.config import Settings, configure_logging, get_logger, get_settings
 from app.services.audit import AuditStore
 from app.services.copilot import Copilot
+
+log = get_logger("main")
 
 
 def create_app(
@@ -72,9 +84,26 @@ def create_app(
     application.state.settings = settings
     application.state.copilot = copilot or Copilot(settings=settings)
     application.state.audit = audit or AuditStore(settings.audit_db_path)
+    application.state.templates = Jinja2Templates(directory=str(settings.templates_dir))
 
     application.include_router(ops_router)
     application.include_router(api_router)
+
+    # Mounted only if it is really there. `StaticFiles` raises at mount time on
+    # a missing directory, which would turn "the assets were not copied into the
+    # image" into "the container does not start" -- and take /health down with
+    # it, so nothing could report why.
+    if Path(settings.static_dir).is_dir():
+        application.mount(
+            "/static", StaticFiles(directory=str(settings.static_dir)), name="static"
+        )
+    else:
+        log.warning(
+            "No static directory at %s; the console will load without assets",
+            settings.static_dir,
+        )
+
+    application.include_router(pages_router)
     return application
 
 

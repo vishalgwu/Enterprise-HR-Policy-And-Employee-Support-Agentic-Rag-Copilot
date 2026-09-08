@@ -36,10 +36,12 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from app import __version__
@@ -71,6 +73,39 @@ UNAVAILABLE = (
 
 ops = APIRouter(tags=["ops"])
 api = APIRouter(prefix="/api")
+# The UI is one page. `include_in_schema=False` keeps it out of /docs, which
+# describes the JSON API -- an HTML page in that list is noise to anyone reading
+# it to write a client.
+pages = APIRouter(include_in_schema=False)
+
+
+# --- The page ----------------------------------------------------------------
+
+
+@pages.get("/", response_class=HTMLResponse)
+def index(request: Request, settings: Settings = Depends(get_settings_dep)):
+    """Serve the single-page console.
+
+    Rendered server-side rather than shipped as a static file so the page starts
+    with the deployment's own identity -- its name, environment and whether the
+    admin surface is configured at all. The browser then talks to the same
+    origin for everything else, which is why this application needs no CORS
+    middleware: adding one would be opening a door nothing is knocking on.
+
+    `admin_enabled` decides whether the upload and audit views are *offered*.
+    It is not the gate -- `require_admin` is, on every request. Hiding a control
+    the server would refuse anyway is a courtesy, not a security boundary.
+    """
+    return request.app.state.templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "app_name": settings.app_name,
+            "app_env": settings.app_env,
+            "version": __version__,
+            "admin_enabled": settings.admin_enabled,
+        },
+    )
 
 
 # --- Health ------------------------------------------------------------------

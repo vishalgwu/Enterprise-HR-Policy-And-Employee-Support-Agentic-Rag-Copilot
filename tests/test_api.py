@@ -104,6 +104,48 @@ def test_building_the_app_touches_neither_network_nor_disk(tmp_path):
     assert not db.exists()
 
 
+# --- The console page --------------------------------------------------------
+
+
+def test_the_console_is_served_at_the_root():
+    response = client(APP_NAME="HR Copilot").get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    # Server-rendered identity, so the page opens as this deployment rather than
+    # flashing a generic shell while it asks /health who it is.
+    assert "HR Copilot" in response.text
+    assert "/static/js/app.js" in response.text
+
+
+def test_the_page_tells_the_ui_whether_admin_is_configured():
+    """The UI hides controls the server would refuse. That is a courtesy, not
+    the gate -- `require_admin` is, on every request."""
+    assert 'data-admin="off"' in client().get("/").text
+    assert 'data-admin="on"' in client(ADMIN_API_KEY="k").get("/").text
+
+
+def test_the_page_is_not_in_the_json_api_schema():
+    """/docs describes the JSON API; an HTML page in that list is noise to
+    anyone reading it to write a client."""
+    schema = client(APP_ENV="development").get("/openapi.json").json()
+    assert "/" not in schema["paths"]
+    assert "/api/chat" in schema["paths"]
+
+
+def test_the_stylesheet_and_script_are_served():
+    c = client()
+    assert c.get("/static/css/style.css").status_code == 200
+    assert c.get("/static/js/app.js").status_code == 200
+
+
+def test_a_missing_static_directory_does_not_stop_the_app(tmp_path):
+    """StaticFiles raises at mount time on a missing directory, which would turn
+    "the assets were not copied into the image" into "the container does not
+    start" -- and take /health down with it."""
+    app = create_app(Settings(PINECONE_API="p", STATIC_DIR=tmp_path / "nope"))
+    assert TestClient(app).get("/health").status_code == 200
+
+
 # --- /api/chat ---------------------------------------------------------------
 
 

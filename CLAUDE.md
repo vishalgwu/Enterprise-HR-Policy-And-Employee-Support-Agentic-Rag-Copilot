@@ -9,9 +9,10 @@ architecture are checked in: `docs/Enterprise_HR_Agentic_RAG_Problem_Statement_D
 and `docs/architecture.png`. Read them before designing anything new — they name the endpoints, the
 data layer, the roles and the deployment target.
 
-The retrieval stack, the 10-node LangGraph agent and the HTTP surface are complete: `/health`,
-`/api/chat`, and the admin-gated `/api/upload` and `/api/audit`, over a SQLite audit log. The
-frontend and Docker/DigitalOcean packaging are not built.
+The retrieval stack, the 10-node LangGraph agent, the HTTP surface and the browser console are
+complete: `/health`, `/api/chat`, the admin-gated `/api/upload` and `/api/audit`, a SQLite audit
+log, and a single-page UI at `/` served from `templates/` and `static/`. Docker/DigitalOcean
+packaging is not built.
 
 ## Environment and commands
 
@@ -22,7 +23,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 195 tests, offline, no credentials needed
+pytest                                 # 200 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -67,7 +68,10 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 | `app/services/audit.py` | `AuditStore` — the SQLite record of every answered question |
 | `app/api/deps.py` | what a route depends on, read off `app.state` |
 | `app/api/routes.py` | the `ops` (`/health`) and `api` (`/api/*`) routers |
-| `app/main.py` | `create_app` — builds the app and wires the services onto `app.state` |
+| `app/main.py` | `create_app` — builds the app, wires services onto `app.state`, mounts `/static` |
+| `templates/index.html` | the console, one Jinja2 page |
+| `static/css/style.css` | tokens, components, both themes |
+| `static/js/app.js` | the console's behaviour; no framework, no build step |
 | `scripts/*` | thin CLI callers |
 
 There is no `test.py` or `data/sample_kb/` at the repo root; both existed briefly and were removed.
@@ -542,6 +546,55 @@ process before any limit applies — and a refused upload leaves no partial file
 **The upload ingest never prunes,** and `ingest_upload` is where that is decided. Pruning reconciles
 a namespace against a directory on disk; for a single-file upload it would delete the entire rest of
 the corpus.
+
+## Console notes
+
+**The console is served from the same application, so there is no CORS middleware — deliberately.**
+`GET /` renders `templates/index.html` and the browser then calls `/api/*` same-origin. Adding a
+CORS middleware would widen the surface for a request nobody is making. If the target
+architecture's Nginx container ever serves `static/` from a different origin, that is the moment to
+add one, scoped to that origin.
+
+**`static/` is mounted only when the directory exists.** `StaticFiles` raises at *mount* time on a
+missing directory, which would turn "the assets were not copied into the image" into "the container
+does not start" — and take `/health` down with it, so nothing could report why. Missing assets log a
+warning and the API keeps serving.
+
+**The page's `data-admin` attribute hides controls; it is not the gate.** `require_admin` is, on
+every request. `/health` is authoritative and the JS re-reads it every 30s, so a deployment that
+gains or loses its admin key updates the UI without a reload.
+
+**Nothing untrusted is ever assigned to `innerHTML`.** Answer text comes from an LLM, citation
+titles from uploaded documents, audit rows from the database — none of it is content this
+application controls, and the admin reading the audit log is exactly the session worth stealing.
+Every dynamic string reaches the page through `textContent` or `createTextNode`, and the light
+markdown renderer *builds* `<strong>` / `<code>` elements rather than parsing markup, so there is no
+escaping step that can be forgotten. Keep it that way: the moment one `innerHTML` appears, a model
+reply containing `<img src=x onerror=...>` runs.
+
+**The admin key is held in `sessionStorage`, not `localStorage`.** It is a credential; session
+scope means a shared machine does not keep it after the tab closes. It goes in the `X-Admin-Key`
+header and never in a query string — a URL reaches the history, the proxy log and the `Referer`.
+
+**`min-height: 0` on every flex and grid child down to `.thread` is load-bearing.** A grid item
+defaults to `min-height: auto`, which is its *min-content* height, so without it on `.stage` the
+shell's row grew to fit the entire unscrolled conversation, the body gained 169px of scrollable
+overflow, and the first `input.focus()` after an answer scrolled the topbar out of view. The symptom
+looks like a scroll bug and the cause is a sizing default; do not "fix" it by re-adding `overflow`
+somewhere.
+
+**Entrance animations are gated behind a `.stagger-in` class, not put on the element.** The trace
+and evidence lists are rendered the moment an answer lands, into whichever inspector panels are
+*not* the open tab — and a CSS animation never runs on a `display:none` element. With
+`animation-fill-mode: both` the items were then stuck holding the `from` keyframe, so opening the
+tab showed an empty panel with the content sitting there at `opacity: 0`. The JS adds the class when
+the container is actually on screen.
+
+**The graph highlight is derived from the trace, not from a second source of truth.** `TRACE_NODE`
+in `app.js` maps a trace entry's tag (`"KB Retriever"`, `"Generate/Web"`) to a node id, and
+consecutive visited nodes are exactly the edges traversed — including `rewrite -> retrieve`, the
+loop. Renaming a tag in `note()` calls in `app/agent/nodes.py` silently stops lighting that node, so
+change both together.
 
 ## The build plan
 
