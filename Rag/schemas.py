@@ -24,9 +24,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from typing_extensions import NotRequired, TypedDict
 
-from Rag.clients import get_llm
-from Rag.config import configure_stdout
+from Rag.clients import get_llm, is_rate_limit
+from Rag.config import configure_logging, configure_stdout, get_logger
 from Rag.loaders import format_documents
+
+log = get_logger("schemas")
 
 # format_documents lives in loaders but is re-exported here: callers building a
 # grading prompt want the decision types and the evidence renderer together.
@@ -51,7 +53,9 @@ Grade = Literal["good", "weak"]
 # Provenance of the finished answer, kept separate from `route`: the router's
 # choice and what actually produced the answer are different facts, and a run
 # that routes to "kb" can still end up answering from the web.
-SourceUsed = Literal["private_kb", "web_search", "direct", "insufficient_evidence"]
+SourceUsed = Literal[
+    "private_kb", "web_search", "direct", "insufficient_evidence", "error"
+]
 
 # One rewrite-and-retry before escalating to web search. Higher values mostly
 # buy latency: if a rewrite does not fix retrieval, a second rarely does.
@@ -158,21 +162,88 @@ def get_evidence_grader(llm=None):
     return GRADER_PROMPT | (llm or get_llm()).with_structured_output(EvidenceGrade)
 
 
+def _failed_generation(exc) -> str | None:
+    """Recover the model's raw text from a Groq tool_use_failed error.
+
+    Groq returns 400 `tool_use_failed` when the model answers in plain text
+    instead of calling the tool the structured output binds. It echoes what the
+    model actually said in `error.failed_generation`, and that text is usually
+    the correct value -- an observed failure carried exactly "direct".
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            generated = error.get("failed_generation")
+            if isinstance(generated, str):
+                return generated
+    return None
+
+
+def _coerce(text: str | None, allowed: tuple[str, ...]) -> str | None:
+    """Match loose model text against an enum: 'direct', '"direct"', {"route": "direct"}."""
+    if not text:
+        return None
+    lowered = text.strip().strip("\"' \n\t.").lower()
+    for value in allowed:
+        if lowered == value:
+            return value
+    # Fall back to containment so a JSON blob or a short sentence still resolves,
+    # but only when exactly one candidate appears -- otherwise it is a guess.
+    hits = [v for v in allowed if v in lowered]
+    return hits[0] if len(hits) == 1 else None
+
+
 def route_question(question: str, router=None) -> Route:
-    return (router or get_router()).invoke({"question": question}).route
+    """Route one message, surviving a structured-output failure.
+
+    Falls back to 'kb' rather than 'direct': routing an unclassifiable message
+    to retrieval costs a lookup, whereas defaulting to 'direct' would make the
+    assistant answer from memory with no evidence behind it.
+    """
+    try:
+        return (router or get_router()).invoke({"question": question}).route
+    except Exception as exc:  # noqa: BLE001 - any client error must not crash the graph
+        recovered = _coerce(_failed_generation(exc), ("kb", "direct"))
+        if recovered:
+            return recovered  # type: ignore[return-value]
+        if is_rate_limit(exc):
+            log.error("[Router] RATE LIMITED; defaulting to kb (%s)", str(exc)[:160])
+        else:
+            log.warning("[Router] structured output failed (%s); defaulting to kb",
+                        type(exc).__name__)
+        return "kb"
 
 
 def grade_evidence(question: str, evidence: str, grader=None) -> Grade:
-    """Grade evidence. Empty evidence is 'weak' without spending a call."""
+    """Grade evidence. Empty evidence is 'weak' without spending a call.
+
+    Falls back to 'weak' on a structured-output failure, so an unreadable grade
+    sends the graph to its fallback path instead of letting an ungraded answer
+    through.
+    """
     if not evidence.strip():
         return "weak"
-    return (grader or get_evidence_grader()).invoke(
-        {"question": question, "evidence": evidence}
-    ).grade
+    try:
+        return (grader or get_evidence_grader()).invoke(
+            {"question": question, "evidence": evidence}
+        ).grade
+    except Exception as exc:  # noqa: BLE001
+        recovered = _coerce(_failed_generation(exc), ("good", "weak"))
+        if recovered:
+            return recovered  # type: ignore[return-value]
+        if is_rate_limit(exc):
+            log.error("[Grader] RATE LIMITED; grading weak by default, which is a "
+                      "quota failure and not a judgement (%s)", str(exc)[:160])
+        else:
+            log.warning("[Grader] structured output failed (%s); defaulting to weak",
+                        type(exc).__name__)
+        return "weak"
 
 
 def main():
     configure_stdout()
+    configure_logging()
     llm = get_llm()
     router = get_router(llm)
     grader = get_evidence_grader(llm)

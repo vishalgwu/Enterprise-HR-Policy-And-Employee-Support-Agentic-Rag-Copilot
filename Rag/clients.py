@@ -48,6 +48,22 @@ def get_llm(model: str | None = None,
     return ChatGroq(model=model or config.GROQ_MODEL, temperature=temperature)
 
 
+def is_rate_limit(exc: BaseException) -> bool:
+    """True when a provider rejected the call for quota, not for content.
+
+    Worth distinguishing: the graph's safe defaults turn any failure into
+    "evidence is weak", so a exhausted quota looks exactly like a knowledge gap
+    unless it is named. Groq's free tier caps tokens per *day*, so this does not
+    clear in a few seconds.
+    """
+    if type(exc).__name__ == "RateLimitError":
+        return True
+    if getattr(exc, "status_code", None) == 429:
+        return True
+    text = str(exc).lower()
+    return "rate limit" in text or "error code: 429" in text
+
+
 def web_results_to_text(result) -> str:
     """Flatten a Tavily response into text a grader and a prompt can consume.
 

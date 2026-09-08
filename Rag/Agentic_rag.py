@@ -87,6 +87,7 @@ def get_public_retriever(k: int = config.DEFAULT_K, score_threshold=None, embedd
 
 def main():
     config.configure_stdout()
+    config.configure_logging()
 
     documents = load_hr_policy_documents()
     chunks = split_hr_policy_documents(documents)

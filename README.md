@@ -198,16 +198,43 @@ first run (384-d, cosine, serverless).
 python Rag/Agentic_rag.py     # ingest the public HR article  -> default namespace
 python Rag/private_kb.py      # ingest the private KB + retrieval demo -> "private-kb"
 python Rag/graph.py           # run the agent over sample questions
+python Rag/demo.py            # four demos, one per path
+python Rag/demo.py 2          # just demo 2
 ```
 
 Ask a single question:
 
 ```python
-from Rag.graph import ask
+from Rag.graph import ask_agent, build_graph
 
-final = ask("How many PTO days do I get per year?")
-print(final["source_used"], final["answer"])
+graph = build_graph()                     # reuse across questions
+result = ask_agent("How many PTO days do I get per year?", graph)
 ```
+
+`ask_agent` prints the answer with its provenance — route taken, source used, retry count, how
+much evidence each stage found and how it graded, and which KB files were cited — then returns the
+final state. Use `ask()` instead when you want the state without the printing.
+
+### Demos
+
+```
+Demo 1  Answer from the Private KB   "How many PTO days do I get, and do unused days carry over?"
+Demo 2  Web Search Fallback          "What is the statutory minimum paid holiday in the UK?"
+Demo 3  Direct Answer                "hi there, thanks for the help earlier!"
+Demo 4  Current / External Question  "What does recent research say about four-day work weeks?"
+```
+
+| Demo | route | source_used | retries |
+|---|---|---|---|
+| 1 | `kb` | `private_kb` | 0 |
+| 2 | `kb` | `web_search` | 0 |
+| 3 | `direct` | `direct` | 0 |
+| 4 | `kb` | `web_search` | 0 |
+
+Demos 2 and 4 both end at web search, and the difference is the point. Demo 2 is a genuine HR
+question this company's KB does not cover; demo 4 is one no internal policy could ever answer. In
+both, retrieval returns four chunks that *look* plausible and the grader marks them `weak` — the
+similarity gate alone would have let them through.
 
 Both ingests are idempotent — chunk ids are derived from `source` + `start_index`, so re-running
 overwrites rather than duplicating.
@@ -267,6 +294,19 @@ Writer and reader share a single `PRIVATE_NAMESPACE` constant so the two cannot 
 **Ingestion was not idempotent.** `PineconeVectorStore.from_documents` mints fresh UUIDs per call, so
 every re-run doubled the corpus. Deterministic ids from `source` + `start_index` make re-ingestion an
 overwrite — verified by two consecutive runs both leaving 18 vectors.
+
+**Any single service outage took down the whole agent.** Six nodes called Pinecone, Tavily or the
+LLM with no error handling, so one flaky call aborted the run — worst of all in `search_web`, which
+*is* the fallback and had none of its own. Every node now degrades instead of raising: retrieval
+failure becomes zero chunks and routes to the web, search failure becomes empty evidence, a failed
+rewrite keeps the original query, and a failed generation returns an honest message rather than
+nothing. Verified by injecting failures at each node and asserting the run still terminates with an
+answer.
+
+**An exhausted API quota was indistinguishable from a knowledge gap.** Groq's free tier caps tokens
+per *day*. When it ran out mid-testing, every grade came back `weak` and every run ended
+`insufficient_evidence` — the safe defaults working correctly, but silently. Rate-limit rejections
+are now detected and logged at ERROR as degraded results rather than judgements.
 
 **The embedding model was reloaded on every call.** `get_embeddings()` was uncached, so any
 retrieval that did not pass an explicit `embedding` rebuilt a ~90 MB sentence-transformers model

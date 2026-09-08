@@ -9,11 +9,37 @@ are constructed, so this module must be imported before any of them are built --
 which it is, because they all import their settings from here.
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+LOGGER_NAME = "hr_copilot"
+# A library must not configure logging for its host. NullHandler keeps these
+# records silent until an entry point calls configure_logging().
+logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Logger for one module, under the package's shared root."""
+    return logging.getLogger(f"{LOGGER_NAME}.{name}")
+
+
+def configure_logging(level: int = logging.INFO) -> None:
+    """Send this package's logs to stderr. Entry points only, never on import.
+
+    Keeps stdout clean for the answer itself, so `python Rag/demo.py > out.txt`
+    captures results without the per-node trace.
+    """
+    logger = logging.getLogger(LOGGER_NAME)
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+    logger.setLevel(level)
+    logger.propagate = False
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 

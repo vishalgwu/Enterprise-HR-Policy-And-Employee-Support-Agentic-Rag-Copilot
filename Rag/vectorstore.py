@@ -14,7 +14,10 @@ from pinecone import Pinecone, ServerlessSpec
 
 from Rag import config
 from Rag.clients import get_embeddings
+from Rag.config import get_logger
 from Rag.loaders import chunk_id
+
+log = get_logger("vectorstore")
 
 
 @lru_cache(maxsize=1)
@@ -172,7 +175,7 @@ def upsert_documents(
     if prune:
         pruned = prune_orphans(namespace, set(ids), pc)
         if pruned:
-            print(f"Pruned {pruned} orphaned vector(s) with no source on disk")
+            log.info("Pruned %d orphaned vector(s) with no source on disk", pruned)
     return store
 
 

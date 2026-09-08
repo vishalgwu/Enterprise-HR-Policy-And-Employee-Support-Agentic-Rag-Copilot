@@ -132,6 +132,37 @@ serving withdrawn policy. Only the private namespace is reconciled; the public w
 `describe_index_stats` after ingest because a retrieval fired immediately after an upsert returns
 nothing. Do not drop this when refactoring ingest.
 
+**Every graph node degrades; none may raise.** A node that throws aborts the whole run, so one
+flaky Pinecone or Tavily call would cost an answer the other source could have given. `guard()` in
+`build_nodes` wraps each network call: retrieval failure becomes zero chunks (which routes to the
+web fallback), search failure becomes empty evidence, a rewrite failure keeps the original query
+while still incrementing `retry_count` so a broken LLM cannot spin the loop, and a generation
+failure returns `GENERATION_FAILED` with `source_used="error"` rather than an empty answer.
+
+**Groq's free tier caps tokens per DAY, and exhaustion is invisible without looking.** Observed:
+`429 ... tokens per day (TPD): Limit 200000, Used 199771`. Because every safe default is "weak",
+an exhausted quota looks exactly like a knowledge gap — the router returns `kb`, every grade
+returns `weak`, and every run ends `insufficient_evidence`. `is_rate_limit()` distinguishes it and
+those paths log at ERROR saying the results are degraded rather than a judgement. If a whole test
+run suddenly grades everything weak, check the quota before touching a prompt. Limits are
+per-model, so `GROQ_MODEL=openai/gpt-oss-120b` is a working escape hatch.
+
+**Library code logs; only `main()` prints.** `config.get_logger()` per module, with a NullHandler
+on the package root so importing this library never writes anywhere. Entry points call
+`configure_logging()`, which sends records to **stderr** — stdout stays clean so
+`python Rag/demo.py > out.txt` captures answers without the node trace. Do not add `print()` to a
+non-CLI function.
+
+**Structured output fails intermittently and must never crash the graph.** Groq returns
+`400 tool_use_failed` — "Tool choice is required, but model did not call a tool" — when the model
+answers in plain text instead of invoking the bound tool. Observed live on the router, whose call
+is on the path of *every* question. The error body carries `error.failed_generation`, which holds
+what the model actually said and is usually the correct value (an observed failure carried exactly
+`"direct"`). `route_question` and `grade_evidence` recover from it, then fall back to safe
+defaults: the router to `kb` (seek evidence rather than answer from memory) and the grader to
+`weak` (distrust rather than pass ungraded evidence). Graph nodes must call those helpers, not
+`router.invoke` / `grader.invoke` directly.
+
 **Graph nodes are closures, built once per graph.** `build_nodes` takes the LLM, retriever and
 search tool and closes over them, so a run constructs each once and tests can inject fakes —
 that is how the rewrite loop and the insufficient-evidence path are tested deterministically,

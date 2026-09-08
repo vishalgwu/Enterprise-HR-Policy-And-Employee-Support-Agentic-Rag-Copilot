@@ -114,6 +114,7 @@ def _prune_orphans(pc: Pinecone, keep_ids) -> int:
 
 def main():
     config.configure_stdout()
+    config.configure_logging()
     embeddings = get_embeddings()
 
     documents = load_private_documents()
