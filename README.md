@@ -16,20 +16,31 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Public web ingestion → Pinecone | Implemented, verified end to end |
 | Private (internal) knowledge base → Pinecone | Implemented, verified end to end |
 | Namespace isolation between the two corpora | Implemented |
-| Retrieval + out-of-domain gating | Implemented, evaluated on 12 questions |
+| Retrieval + out-of-domain gating | Implemented, evaluated on 12 questions, re-verified after the KB grew |
+| Private KB covering all nine areas the brief names | 11 documents, 31 chunks |
 | Groq LLM client (`openai/gpt-oss-20b`, temperature 0) | Implemented, live call verified |
 | Tavily web-search client | Implemented, live call verified |
 | Structured routing + evidence grading | Implemented, 21/21 on a labelled set |
 | LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
-| FastAPI service | Not yet built |
+| Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
+| Metadata filtering (`department`, `doc_type`) | Implemented |
+| Test suite — 91 tests, no network, no credentials | Implemented |
+| FastAPI service | `/health` only; `/chat`, `/upload`, `/ingest`, `/feedback`, `/admin`, `/logs` not yet built |
+| SQLite audit layer (chat history, feedback, traces) | Not yet built |
 | HTML/CSS/JS frontend | Not yet built |
+| Docker + DigitalOcean deployment | Not yet built |
 
-The agent graph is complete and runs end to end. What remains is exposing it over HTTP and
-putting a UI in front of it.
+The agent graph is complete and runs end to end, and `app.services.copilot` is the seam the API
+will call. What remains is the rest of the HTTP surface, persistence, a UI, and packaging.
+
+The reference brief and target architecture this is built against are in
+[docs/](docs/): `Enterprise_HR_Agentic_RAG_Problem_Statement_DigitalOcean.pdf` and
+`architecture.png`.
 
 ## The agent graph
 
-Ten nodes in [Rag/graph.py](Rag/graph.py). The graph never answers from model memory: every
+Ten nodes, wired in [app/agent/graph.py](app/agent/graph.py) over bodies in
+[app/agent/nodes.py](app/agent/nodes.py). The graph never answers from model memory: every
 answer is traceable to internal policy, to cited web results, or to an explicit admission that
 neither had the evidence.
 
@@ -53,9 +64,10 @@ graph TD
 ```
 
 Dotted arrows are branches taken on a structured decision. Regenerate the diagram straight from
-the compiled graph with `python Rag/graph.py --diagram`, which writes
-[docs/agent-graph.md](docs/agent-graph.md); a structural test asserts the compiled edge set matches
-this design exactly, so the picture cannot drift from the code.
+the compiled graph with `python scripts/render_graph.py`, which writes
+[docs/agent-graph.md](docs/agent-graph.md). `test_the_compiled_graph_matches_the_documented_design`
+asserts the compiled edge set equals this design exactly, so the picture cannot drift from the
+code.
 
 **A rewrite loops back to the KB, not to web search.** A weak retrieval is usually a vocabulary
 mismatch between how an employee phrases a question and how policy is written, so the rewritten
@@ -82,8 +94,9 @@ Verified live, all four terminal paths plus the loop:
   (HR Acuity)       │  .entry-content)             │
                     └───────────────┬──────────────┘
                                     │
-  data/private_kb/*.md  ───►  RecursiveCharacterTextSplitter
-  (6 internal policies)             │  1000 chars / 150 overlap
+  data/private_kb/**  ───────►  RecursiveCharacterTextSplitter
+  .md .txt .pdf .docx               │  1000 chars / 150 overlap
+  (subdir = department)             │  markdown splits on headings first
                                     ▼
                     ┌──────────────────────────────┐
                     │  all-MiniLM-L6-v2 (384-d,    │
@@ -92,8 +105,8 @@ Verified live, all four terminal paths plus the loop:
                                     ▼
                     ┌──────────────────────────────┐
                     │  Pinecone serverless, cosine │
-                    │   namespace ""          → 18 │  public article
-                    │   namespace "private-kb"→ 15 │  internal policy
+                    │   namespace "hr-docs"   → 31 │  internal policy
+                    │   namespace "public-web"     │  scraped article (optional)
                     └───────────────┬──────────────┘
                                     ▼
                      retriever + raw-cosine gate (0.15)
@@ -105,18 +118,55 @@ Verified live, all four terminal paths plus the loop:
 ```
 
 **Two corpora, one index, separated by namespace.** Scraped public content and internal policy are
-never interleaved in a single retrieval result. Retrieval against the private KB is scoped to the
-`private-kb` namespace.
+never interleaved in a single retrieval result. The employee-facing agent only ever reads the
+private namespace; the public corpus exists to prove the retrieval code is genuinely
+namespace-parameterised rather than privately hardcoded. Both namespaces are explicit strings —
+Pinecone's default namespace (`""`) behaves inconsistently between `list` and `delete`.
+
+**Retrieval can be narrowed by metadata.** Every chunk carries `department`, `doc_type`, `source`,
+`title` and `origin`. A subdirectory under `data/private_kb/` becomes the department, so
+`data/private_kb/payroll/bonus.md` is filterable without a manifest, and
+`get_kb_retriever(department="payroll")` composes that filter with the similarity gate rather than
+replacing it.
 
 **Embeddings run locally.** `all-MiniLM-L6-v2` via `sentence-transformers` — no per-query embedding
 cost and no employee question leaving the machine at embed time.
 
 ---
 
+## The knowledge base
+
+The problem statement names nine areas PeoplePrime's HR knowledge base holds. All nine are covered
+by [data/private_kb/](data/private_kb/):
+
+| Area named in the brief | Document |
+|---|---|
+| Leave policies | `leave-and-time-off.md` |
+| Remote-work guidelines | `remote-and-hybrid-work.md` |
+| Attendance rules | `attendance-and-working-hours.md` |
+| Payroll information | `payroll-and-compensation.md` |
+| Employee benefits | `benefits-and-insurance.md` |
+| Onboarding and offboarding | `onboarding-and-offboarding.md` |
+| Code-of-conduct guidelines | `code-of-conduct-and-grievance.md` |
+| Employee-record policies | `employee-records-and-data-privacy.md` |
+| HR forms | `hr-forms-and-requests.md` |
+
+Plus `expense-reimbursement.md` and `hr-copilot-how-it-works.md`, the latter so the assistant can
+answer questions about itself from evidence rather than from model memory.
+
+The documents deliberately agree with each other where they overlap — notice periods, PTO payout on
+termination, expense payment timing, core hours — because a KB that contradicts itself produces a
+confidently wrong answer that no amount of grading catches. A question spanning two documents is
+answered from both: see the resignation-and-PTO example, which cites
+`onboarding-and-offboarding.md` and `leave-and-time-off.md` together.
+
+---
+
 ## Retrieval evaluation
 
-Retrieval quality is measured, not assumed. A 12-question benchmark covers all six private
-documents plus deliberately out-of-domain questions.
+Retrieval quality is measured, not assumed. A 12-question benchmark covers every private document
+plus deliberately out-of-domain questions. The numbers below were measured when the KB held six
+documents; see [After the KB grew](#after-the-kb-grew) for the re-check at eleven.
 
 | Metric | Result |
 |---|---|
@@ -144,13 +194,40 @@ high as 0.521, overlapping the correct-document range, so no threshold can separ
 whether retrieved text actually answers the question stays the LLM grader's job in the agent graph.
 The threshold exists to stop obvious noise from reaching it.
 
+### After the KB grew
+
+A fixed threshold is a real risk when a corpus grows: more documents means more chances that an
+unrelated question finds something that scores above the gate. So the KB expanding from 6 documents
+(15 chunks) to 11 (31 chunks) was re-measured rather than assumed.
+
+| Question | Chunks returned | Top-1 source | Score |
+|---|---|---|---|
+| "What time must I tell my manager if I am off sick?" | 4 | `attendance-and-working-hours.md` | 0.510 |
+| "When am I paid each month and where do I find my payslip?" | 4 | `payroll-and-compensation.md` | 0.697 |
+| "How much notice do I have to give when I resign?" | 4 | `onboarding-and-offboarding.md` | 0.472 |
+| "How long does the company keep my record after I leave?" | 4 | `employee-records-and-data-privacy.md` | 0.661 |
+| "How do I request an employment verification letter?" | 4 | `hr-forms-and-requests.md` | 0.505 |
+
+Top-1 from the correct source on all five new areas. Out-of-domain, against the larger corpus:
+
+| Question | Chunks returned | Best ungated score |
+|---|---|---|
+| "What is the capital of France?" | **0** | 0.043 |
+| "Who won the 2022 world cup?" | **0** | 0.054 |
+| "How do I bake sourdough bread?" | **0** | 0.078 |
+
+Out-of-domain still peaks at **0.078**, well under the 0.15 gate, so the calibration holds. Re-run
+this with `python scripts/check_retrieval.py` after any further KB expansion — it is the check that
+tells you whether the threshold still sits in the gap.
+
 ---
 
 ## Structured decisions
 
 The graph branches on LLM decisions, so those decisions are Pydantic models bound with
 `with_structured_output` rather than parsed out of prose. Two decisions exist today, in
-[Rag/schemas.py](Rag/schemas.py):
+[app/agent/schemas.py](app/agent/schemas.py), with the recovery logic in
+[app/agent/decisions.py](app/agent/decisions.py):
 
 | Decision | Values | Purpose |
 |---|---|---|
@@ -192,28 +269,55 @@ cp .env.example .env
 `.env` is gitignored and has never been committed. The Pinecone index is created automatically on
 first run (384-d, cosine, serverless).
 
+Nothing is required in `.env` beyond the three API keys — every other setting has a default, and
+`python run.py` starts even with keys missing so that `/health` can report which ones by name.
+
+> **Migrating from an earlier checkout.** The private namespace default changed from `private-kb`
+> to `hr-docs` and the public corpus moved out of Pinecone's default namespace (`""`) into
+> `public-web`, both to match [docs/architecture.png](docs/architecture.png) and because the empty
+> namespace behaves inconsistently between `list` and `delete`. Re-ingest, then drop the old one:
+>
+> ```bash
+> python scripts/ingest_private_kb.py --drop-namespace private-kb
+> ```
+>
+> Set `PRIVATE_NAMESPACE=private-kb` in `.env` instead if you would rather not move. Writer and
+> reader read the same setting, so either choice is consistent — but a namespace mismatch is
+> silent, since the upsert succeeds and every later retrieval just returns `[]`.
+
 ## Running
 
 ```bash
-python Rag/Agentic_rag.py     # ingest the public HR article  -> default namespace
-python Rag/private_kb.py      # ingest the private KB + retrieval demo -> "private-kb"
-python Rag/graph.py           # run the agent over sample questions
-python Rag/demo.py            # four demos, one per path
-python Rag/demo.py 2          # just demo 2
+python scripts/ingest_private_kb.py   # rebuild the private KB  -> "hr-docs"
+python scripts/ingest_public_web.py   # scrape the public article -> "public-web"
+python scripts/demo.py                # four demos, one per path
+python scripts/demo.py 2              # just demo 2
+python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
+python scripts/render_graph.py        # regenerate docs/agent-graph.md
+python run.py                         # start the API on :8000
+pytest                                # 91 tests, no network, no credentials
 ```
 
 Ask a single question:
 
 ```python
-from Rag.graph import ask_agent, build_graph
+from app.services.copilot import Copilot
 
-graph = build_graph()                     # reuse across questions
-result = ask_agent("How many PTO days do I get per year?", graph)
+copilot = Copilot()                   # builds the graph once, on first ask
+result = copilot.ask("How many PTO days do I get per year?")
+
+result.answer          # the text
+result.source_used     # private_kb | web_search | direct | insufficient_evidence | error
+result.sources         # [SourceRef(source=..., title=..., department=...), ...]
+result.model_dump()    # JSON-ready, and the shape /chat will return
 ```
 
-`ask_agent` prints the answer with its provenance — route taken, source used, retry count, how
-much evidence each stage found and how it graded, and which KB files were cited — then returns the
-final state. Use `ask()` instead when you want the state without the printing.
+`AnswerResult` carries the decision trace the UI is meant to show — route taken, source used,
+retry count, how each stage graded, and which documents were cited. `render_answer(result)`
+formats it for a terminal; `scripts/demo.py` uses exactly that.
+
+The node trace goes to **stderr** via logging, so `python scripts/demo.py > out.txt` captures the
+answers without it.
 
 ### Demos
 
@@ -236,33 +340,46 @@ question this company's KB does not cover; demo 4 is one no internal policy coul
 both, retrieval returns four chunks that *look* plausible and the grader marks them `weak` — the
 similarity gate alone would have let them through.
 
-Both ingests are idempotent — chunk ids are derived from `source` + `start_index`, so re-running
-overwrites rather than duplicating.
+Both ingests are idempotent — chunk ids are derived from `origin` + `source` + `start_index`, so
+re-running overwrites rather than duplicating.
 
 ## Repository layout
 
-Layered so both corpora share one implementation. Each layer imports only from those above it.
+Four layers. Each imports only from those above it, and nothing imports downward or from a script.
 
 ```
-Rag/config.py         settings, secrets, tunable constants (no heavy imports)
-Rag/clients.py        embeddings (cached), Groq chat model, Tavily search
-Rag/loaders.py        web + markdown loading, chunking, chunk ids, evidence rendering
-Rag/vectorstore.py    Pinecone index management and retrieval, parameterised by namespace
-Rag/schemas.py        structured routing/grading decisions, AgentState
-Rag/graph.py          the 10-node LangGraph agent + diagram rendering
-docs/agent-graph.md   diagram generated from the compiled graph
+app/core/config.py        Settings (pydantic-settings), logging, console setup
+app/rag/clients.py        embeddings (cached), Groq chat model, Tavily search
+app/rag/loaders.py        markdown/text/PDF/DOCX/web loading, chunking, chunk ids
+app/rag/vectorstore.py    Pinecone, parameterised by index *and* namespace
+app/rag/ingest.py         load -> chunk -> embed -> upsert -> reconcile, for any corpus
+app/rag/retrieval.py      the private KB and public corpus, namespaces already chosen
+app/agent/schemas.py      routing/grading decision models, AgentState
+app/agent/prompts.py      every prompt, including the two calibrated ones
+app/agent/decisions.py    router and grader + recovery from structured-output failures
+app/agent/nodes.py        node bodies, as closures over injectable clients
+app/agent/graph.py        wiring and compilation
+app/agent/diagram.py      render the compiled graph
+app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
+app/api/                  FastAPI routers (only /health so far, in app/main.py)
 
-Rag/Agentic_rag.py    entry point: public web corpus
-Rag/private_kb.py     entry point: private KB
+scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
+tests/                    91 tests over fakes -- no network, no credentials
 
-data/private_kb/*.md  six internal HR policy documents
-req.txt               pinned dependencies
-CLAUDE.md             architecture notes and non-obvious constraints
+data/private_kb/          11 internal HR policies; a subdirectory is a department
+step.md                   the 16-step build plan this project is working through
+docs/                     the reference brief, target architecture, generated graph
+req.txt                   pinned dependencies (requirements.txt forwards to it)
+CLAUDE.md                 architecture notes and non-obvious constraints
 ```
 
-The two corpora differ only in where text comes from, which separators split it, and which
-namespace it lands in. Ingest, freshness waiting, orphan pruning, gating and retrieval are one
-implementation taking a namespace argument.
+Corpora differ only in where text comes from, which separators split it, and which namespace it
+lands in. Ingest, freshness waiting, orphan pruning, metadata filtering, gating and retrieval are
+one implementation taking a namespace argument.
+
+Every client is injectable at every level — `build_nodes`, `build_graph` and `Copilot` all take
+their dependencies as arguments. That is what lets the whole suite run offline, and it is why
+`tests/conftest.py` needs only three fakes.
 
 ---
 
@@ -325,9 +442,33 @@ questions. Ingestion now reconciles: it lists the namespace and deletes vectors 
 corresponding chunk on disk. Verified by adding a temp policy (retrievable at 0.853), deleting the
 file, re-ingesting, and confirming it no longer retrieves.
 
-**Package imports were broken.** `from Rag.private_kb import ...` raised `ModuleNotFoundError`
-because the module used a script-relative import — fine when run directly, fatal for the planned
-FastAPI and LangGraph layers. `Rag/` is now a package and imports work both ways.
+**Package imports were broken.** An early `from Rag.private_kb import ...` raised
+`ModuleNotFoundError` because the module used a script-relative import — fine when run directly,
+fatal for the FastAPI and LangGraph layers. Logic now lives in the `app` package and scripts are
+thin callers, so imports work regardless of how a file is invoked.
+
+**The agent imported an entry point.** `graph.py` pulled `get_kb_retriever` from `private_kb.py` —
+a corpus script — so the agent depended on a CLI. Retrieval accessors moved into
+`app/rag/retrieval.py` and the dependency now runs one way only.
+
+**Twenty backward-compatibility aliases had no callers.** Both entry points re-exported names
+(`_chunk_id`, `PINECONE_INDEX_NAME`, `_to_relevance_scale`, …) for imports that never existed
+outside them. Deleted: a compatibility shim with nothing to be compatible with is just a second
+name for everything.
+
+**The index name was reachable only through module globals.** `vectorstore` read
+`config.PINECONE_INDEX_NAME` directly in nine places, so nothing could target a second index —
+including a test. Every operation now takes `index_name` and `namespace`, defaulting from settings.
+
+**Missing credentials made the package unimportable.** `config.py` raised at import time, which
+meant no test could run, no `--help` could print, and a container that gets configuration from the
+platform could not start. Secrets are now validated where a client is constructed, with
+`validate_required()` for entry points that genuinely need fail-fast, and `/health` reports which
+are missing by name.
+
+**Chunk ids could collide across corpora.** Ids were `source` + `start_index`, and `source` is only
+a file name. Once HR staff can upload documents, `benefits.pdf` from two departments would produce
+one id and the second ingest would silently overwrite the first. `origin` is now part of the basis.
 
 **Import-time side effects removed.** Documents, chunks and embeddings were built at module scope, so
 importing the module performed an HTTP fetch and loaded a model. Moved into `main()` so the module can
@@ -340,16 +481,32 @@ forever; it is now capped and raises.
 
 ## Roadmap
 
-1. FastAPI service exposing the graph
-2. Web frontend
-3. Expand the private KB beyond markdown — `pypdf` and `python-docx` are already pinned
-4. Conversation memory, so follow-up questions resolve against the previous turn
+Ordered against [docs/architecture.png](docs/architecture.png) and [step.md](step.md), the 16-step
+build plan for this project. Steps 1–9 and 16 are done; 10–15 are what follows.
+
+Two deliberate deviations from step.md, both already in the code:
+
+- **Providers.** The plan says OpenAI embeddings and model. This runs `all-MiniLM-L6-v2` locally
+  (no per-query cost, no employee question leaving the machine at embed time) and Groq for
+  generation and grading. `openai` and `langchain-openai` are installed only because
+  `langchain-pinecone` requires them; nothing imports them.
+- **Module paths.** The plan puts ingestion in `app/services/ingestion.py`, state in
+  `app/rag/state.py` and the workflow in `app/rag/workflow.py`. They live in `app/rag/ingest.py`,
+  `app/agent/schemas.py` and `app/agent/graph.py`, which keeps the agent in one package and stops
+  `app/rag/` mixing retrieval with orchestration. Same work, one directory over.
+
+1. `/chat` over `Copilot.ask` — the facade and its response model already exist
+2. SQLite data layer: chat history, feedback, document metadata, execution traces
+3. `/upload` and `/ingest` for authorised HR staff — the multi-format loader is in place
+4. HTML/CSS/JS frontend: chat with citations and a visible execution trace
+5. Docker + DigitalOcean: FastAPI app, Nginx frontend, ingestion worker, SQLite volume
+6. Conversation memory, so follow-up questions resolve against the previous turn
 
 ## Tech stack
 
 Python 3.13 · LangChain · LangGraph · Pinecone serverless · sentence-transformers
-(all-MiniLM-L6-v2) · Groq (`openai/gpt-oss-20b`) · Tavily · Pydantic · BeautifulSoup ·
-FastAPI *(planned)*
+(all-MiniLM-L6-v2) · Groq (`openai/gpt-oss-20b`) · Tavily · Pydantic + pydantic-settings ·
+BeautifulSoup · pypdf · python-docx · FastAPI · pytest
 
 ## License
 

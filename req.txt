@@ -2,7 +2,7 @@
 # Grouped by whether the code imports them today. Verified against the working
 # venv; `pip install -r req.txt` reproduces a runnable environment.
 
-# --- Core: imported by Rag/ today --------------------------------------------
+# --- Core: imported by app/ today --------------------------------------------
 langchain-core==1.6.1
 langchain-community==0.4.2          # WebBaseLoader
 langchain-text-splitters==1.1.2
@@ -18,19 +18,26 @@ python-dotenv==1.1.1
 beautifulsoup4==4.14.3
 lxml==5.3.0
 
-# --- Next milestone: the agent graph -----------------------------------------
-langgraph==1.1.10
+langgraph==1.1.10                   # the agent graph
+pydantic-settings==2.10.1           # app/core/config.py Settings
 
-# --- Planned: FastAPI service and frontend -----------------------------------
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-jinja2==3.1.6
-python-multipart==0.0.20
-pydantic-settings==2.10.1
-
-# --- Planned: PDF / DOCX ingestion for the private KB ------------------------
+# --- PDF / DOCX ingestion for the private KB ---------------------------------
 pypdf==6.16.2
 python-docx==1.2.0
+
+# --- FastAPI service ---------------------------------------------------------
+# Only /health exists so far; the rest of the surface is the next milestone.
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+
+# --- Planned: server-rendered frontend and uploads ---------------------------
+jinja2==3.1.6
+python-multipart==0.0.20
+
+# --- Tests -------------------------------------------------------------------
+# The suite runs offline: no Groq, Pinecone, Tavily or model download. httpx
+# arrives with fastapi and is what starlette's TestClient uses.
+pytest==8.4.2
 
 # Unpinned on purpose: openai, langchain-openai and langchain. No module here
 # imports them -- generation and grading run on Groq -- but they still get

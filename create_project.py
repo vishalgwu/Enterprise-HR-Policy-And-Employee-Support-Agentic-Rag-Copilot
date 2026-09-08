@@ -1,8 +1,8 @@
 r"""Scaffold the FastAPI application layout described in the README.
 
 Idempotent: creating an existing folder or file is a no-op, and no file that
-already has content is ever truncated.  The Rag/ package, data/private_kb/ and
-the hr/ virtualenv already exist and are left alone.
+already has content is ever truncated. data/private_kb/ and the hr/ virtualenv
+already exist and are left alone.
 
     hr\Scripts\python.exe create_project.py
 """
@@ -13,24 +13,29 @@ root = Path(__file__).resolve().parent
 
 folders = [
     "app/api",
+    "app/agent",
     "app/core",
     "app/rag",
     "app/services",
     "data",
+    "scripts",
     "templates",
     "static",
     "uploads",
     "tests",
 ]
 
-# Package markers, so `from app.core import ...` works the way `Rag/` already does.
+# Package markers, so `from app.core.config import ...` resolves. tests/ is
+# deliberately NOT a package: pyproject puts tests/ on sys.path so the suite can
+# `import conftest`, and an __init__.py there breaks that.
 packages = [
     "app",
     "app/api",
+    "app/agent",
     "app/core",
     "app/rag",
     "app/services",
-    "tests",
+    "scripts",
 ]
 
 files = [

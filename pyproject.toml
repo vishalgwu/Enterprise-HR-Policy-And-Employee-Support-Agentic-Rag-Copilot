@@ -1,0 +1,24 @@
+[project]
+name = "hr-copilot"
+version = "0.2.0"
+description = "Enterprise HR Policy & Employee Support Agentic RAG Copilot"
+requires-python = ">=3.11"
+# Dependencies are pinned in req.txt; this file exists for tool configuration.
+# requirements.txt forwards to it so the conventional pip command works.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The suite imports `app.*` and the fakes in tests/conftest.py, and runs from
+# the repo root without the package being installed.
+pythonpath = [".", "tests"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 92
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# Nodes and decision helpers catch bare Exception on purpose: a node that raises
+# aborts the whole graph run.
+ignore = ["B008"]

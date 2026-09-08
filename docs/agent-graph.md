@@ -1,8 +1,8 @@
 # Agent graph
 
-Generated from the compiled graph by `python Rag/graph.py --diagram`. Do not edit by hand.
+Generated from the compiled graph by `python scripts/render_graph.py`. Do not edit by hand.
 
-Solid arrows are unconditional edges; dotted arrows are branches.
+Solid arrows are unconditional edges; dotted arrows are branches taken on a structured decision.
 
 ```mermaid
 ---
