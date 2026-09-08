@@ -21,7 +21,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 101 tests, offline, no credentials needed
+pytest                                 # 112 tests, offline, no credentials needed
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
 python scripts/ingest_public_web.py    # scraped article     -> "public-web"
 python scripts/demo.py                 # four demos, one per graph path
@@ -39,7 +39,7 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 | Module | Responsibility |
 |---|---|
 | `app/core/config.py` | `Settings`, logging, console setup. No heavy imports. |
-| `app/rag/clients.py` | embeddings (cached), Groq chat model, Tavily search |
+| `app/rag/clients.py` | embeddings (cached), chat model, Tavily search — the only place providers branch |
 | `app/rag/loaders.py` | markdown/text/PDF/DOCX/web loading, chunking, chunk ids, evidence rendering |
 | `app/rag/vectorstore.py` | Pinecone, parameterised by **index and namespace** |
 | `app/rag/ingest.py` | load → chunk → embed → upsert → reconcile, for any corpus |
@@ -66,9 +66,10 @@ Scripts run both ways (`python scripts/demo.py` and `python -m scripts.demo`) be
 
 ## Secrets
 
-`.env` at the repo root holds `GROQ_API`, `TAVILY_API`, `PINECONE_API`, `PINECONE_INDEX`,
-`PINECONE_CLOUD`, `PINECONE_REGION`. It is gitignored and has never been committed;
-[.env.example](.env.example) documents the shape. Only the three keys are required.
+`.env` at the repo root holds `GROQ_API`, `TAVILY_API`, `PINECONE_API`, `OPENAI_API_KEY`,
+`PINECONE_INDEX`, `PINECONE_CLOUD`, `PINECONE_REGION` and the `LANGSMITH_*` group. It is gitignored
+and has never been committed; [.env.example](.env.example) documents the shape. Which keys are
+*required* depends on the configured providers — see `required_secret_fields()`.
 
 **Missing credentials must not break import.** `Settings` defaults every secret to `""` and
 `Settings.require()` raises where a client is constructed. This is deliberate: an earlier version
@@ -110,11 +111,46 @@ false and silently uploads every question. `get_env_var` is also `lru_cache`d an
 client is constructed. They are, because `export_client_env` runs when `app.core.config` is
 imported, which precedes every client. Changing them at runtime will not take effect.
 
-**Nothing here uses OpenAI**, and `.env` may carry `OPENAI_API_KEY` harmlessly. pydantic-settings
-reads the file *without* exporting it, `Settings` has `extra="ignore"`, and `export_client_env` does
-not forward it — so no OpenAI client can be configured by accident even though `langchain-openai` is
-installed as a `langchain-pinecone` dependency. `test_openai_key_is_never_exported_by_this_project`
-pins that, and would fail if anyone reintroduced `load_dotenv()`, which exports the whole file.
+**Secrets are `SecretStr`, and that is not decoration.** They render as `**********` in reprs,
+tracebacks and log lines, so `log.info("%s", settings)` or an unhandled exception carrying the model
+cannot publish a key. Read the real value through `settings.require(field)`, never by attribute.
+
+**Never raise from a `model_validator` on this class.** A model-level validator that raises produces
+a pydantic `ValidationError` whose `input_value` is the **whole input mapping** — every API key,
+rendered into the error text that then reaches logs and tracebacks. Observed exactly once, in a
+dimension-mismatch check: the message began ``input_value={'GROQ_API': 'gsk_...``. Field-level
+errors are safe (they echo only that field), but anything cross-field belongs in an ordinary method
+like `validate_embedding()`, called from `validate_required()`.
+
+## Providers
+
+**Groq and OpenAI are both supported, chosen independently** via `LLM_PROVIDER` (`groq` default) and
+`EMBEDDING_PROVIDER` (`huggingface` default). `get_llm` and `get_embeddings` in `app/rag/clients.py`
+are the only places that branch; no node, prompt or graph edge knows which provider is active,
+because both chat models satisfy the same contract the agent needs —
+`.with_structured_output(Model)` bound via function calling. Verified live on both.
+
+**`OPENAI_API_KEY` is exported only when a provider actually uses it.** It is the one setting whose
+export name equals its input alias, so exporting it feeds straight back into the next `Settings`
+built in that process. That also means a test which exports it contaminates every later one, which
+is why `tests/conftest.py` clears it per test at *setup* — `monkeypatch.delenv(..., raising=False)`
+records nothing for an absent variable, so it has nothing to undo for one the test then creates.
+
+**Credential requirements follow the providers.** `required_secret_fields()` asks for `GROQ_API`
+only when the LLM provider is Groq, and `OPENAI_API_KEY` only when something uses OpenAI, so an
+all-OpenAI deployment is not reported broken for lacking a Groq key.
+
+**Each embedding provider needs its own Pinecone index.** `all-MiniLM-L6-v2` emits 384-d vectors and
+`text-embedding-3-small` 1536-d, and Pinecone cannot resize an index — so the two providers cannot
+share one, and switching means a new `PINECONE_INDEX` plus a fresh ingest. `Settings` derives
+`embedding_dim` from the active model when `EMBEDDING_DIM` is unset, and `validate_embedding()`
+rejects a value that contradicts the model rather than letting it fail as an opaque upsert error.
+`KNOWN_EMBEDDING_DIMS` is the table; an unlisted model must state its dimension explicitly.
+
+**`sentence-transformers` cannot be deployed everywhere.** It pulls torch, ~2.5 GB installed, which
+is far over a Vercel function's limit. `EMBEDDING_PROVIDER=openai` is what makes a serverless deploy
+possible at all; on Docker/DigitalOcean either provider works and local embeddings are cheaper and
+more private.
 
 **Write `.gitignore` as UTF-8 and verify the bytes.** Editors on this machine have twice saved it
 as UTF-16, which git cannot parse — it silently ignores nothing, and `.env` shows up as untracked

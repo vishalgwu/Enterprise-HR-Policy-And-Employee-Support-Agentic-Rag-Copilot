@@ -24,8 +24,9 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 101 tests, no network, no credentials | Implemented |
+| Test suite — 112 tests, no network, no credentials | Implemented |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
+| Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
 | FastAPI service | `/health` only; `/chat`, `/upload`, `/ingest`, `/feedback`, `/admin`, `/logs` not yet built |
 | SQLite audit layer (chat history, feedback, traces) | Not yet built |
 | HTML/CSS/JS frontend | Not yet built |
@@ -130,8 +131,9 @@ Pinecone's default namespace (`""`) behaves inconsistently between `list` and `d
 `get_kb_retriever(department="payroll")` composes that filter with the similarity gate rather than
 replacing it.
 
-**Embeddings run locally.** `all-MiniLM-L6-v2` via `sentence-transformers` — no per-query embedding
-cost and no employee question leaving the machine at embed time.
+**Embeddings run locally by default.** `all-MiniLM-L6-v2` via `sentence-transformers` — no per-query
+embedding cost and no employee question leaving the machine at embed time. `EMBEDDING_PROVIDER=openai`
+switches to the API for hosts that cannot ship torch; see [Providers](#providers).
 
 ---
 
@@ -250,6 +252,66 @@ are in domain. "What is the capital of France?" is stopped by the gate and never
 A fabricated *"quokka grooming sabbatical"* question clears the gate — it looks lexically like leave
 policy — and is caught by the grader. Removing either leaves a gap.
 
+## Providers
+
+The LLM and the embeddings are chosen independently, so a deployment can mix them:
+
+| | `LLM_PROVIDER` | `EMBEDDING_PROVIDER` |
+|---|---|---|
+| `groq` *(default)* | `openai/gpt-oss-20b` | — Groq has no embedding endpoint |
+| `openai` | `gpt-4o-mini` | `text-embedding-3-small` |
+| `huggingface` *(default)* | — | `all-MiniLM-L6-v2`, local |
+
+Only [app/rag/clients.py](app/rag/clients.py) branches on this. No node, prompt or graph edge knows
+which provider is active, because both chat models satisfy the same contract the agent needs —
+`.with_structured_output(Model)` bound via function calling. Both paths are verified live: routing,
+grading and generation on each.
+
+`/health` reports what a deployment actually resolved to, and `missing_secrets` only asks for the
+keys the chosen providers need — an all-OpenAI deployment is not reported broken for lacking a Groq
+key.
+
+### Choosing, and the one trap
+
+**Local embeddings are cheaper and more private:** no per-query cost, and no employee question
+leaves the machine at embed time. Prefer them where you can run them.
+
+**`sentence-transformers` pulls torch, ~2.5 GB installed.** That is far over a Vercel function's
+size limit, so a serverless deploy *must* use `EMBEDDING_PROVIDER=openai`. On Docker/DigitalOcean —
+what [docs/architecture.png](docs/architecture.png) targets — either works.
+
+**The trap: each embedding provider needs its own Pinecone index.** MiniLM emits 384-d vectors,
+`text-embedding-3-small` emits 1536-d, and Pinecone cannot resize an index. Switching provider means
+a new `PINECONE_INDEX` and a fresh ingest — you cannot point a local dev setup and a serverless
+deploy at the same index.
+
+`Settings` derives `EMBEDDING_DIM` from the active model and refuses a value that contradicts it, so
+this fails at startup with a readable message instead of as an opaque Pinecone upsert error:
+
+```
+EMBEDDING_DIM=384 contradicts 'text-embedding-3-small', which emits 1536-d vectors.
+Pinecone cannot resize an index -- fix the dimension and point PINECONE_INDEX at a
+name matching the new model.
+```
+
+### Deploying on OpenAI
+
+```bash
+# .env or platform environment variables
+LLM_PROVIDER=openai
+EMBEDDING_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+PINECONE_INDEX=peopleprime-hr-kb-openai   # a different index; 1536-d
+```
+
+Then ingest once against that index: `python scripts/ingest_private_kb.py`.
+
+`OPENAI_API_KEY` is forwarded to the process environment **only** when a provider is set to
+`openai`. A key sitting unused in `.env` is never exported, so `langchain-openai` — installed here
+as a `langchain-pinecone` dependency — cannot configure itself from it by accident.
+
+---
+
 ## Observability
 
 LangSmith tracing is supported and **off unless `LANGSMITH_TRACING` is true and a key is set** —
@@ -330,7 +392,7 @@ python scripts/demo.py 2              # just demo 2
 python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
-pytest                                # 101 tests, no network, no credentials
+pytest                                # 112 tests, no network, no credentials
 ```
 
 Ask a single question:
@@ -399,7 +461,7 @@ app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
 app/api/                  FastAPI routers (only /health so far, in app/main.py)
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    101 tests over fakes -- no network, no credentials
+tests/                    112 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
 step.md                   the 16-step build plan this project is working through

@@ -39,8 +39,20 @@ python-multipart==0.0.20
 # arrives with fastapi and is what starlette's TestClient uses.
 pytest==8.4.2
 
-# Unpinned on purpose: openai, langchain-openai and langchain. No module here
-# imports them -- generation and grading run on Groq -- but they still get
-# installed, because langchain-pinecone requires langchain-openai (which requires
-# openai) and langchain-tavily requires langchain. Pinning them directly implied
-# this project chose them. Do not uninstall them; pip check will break.
+# --- OpenAI: the alternative provider ----------------------------------------
+# Both are now pinned rather than left as transitive dependencies, because
+# LLM_PROVIDER=openai and EMBEDDING_PROVIDER=openai are supported paths. Neither
+# is imported unless a provider is set to openai -- the imports are inside the
+# factory functions in app/rag/clients.py.
+#
+# They were installed either way: langchain-pinecone requires langchain-openai
+# (which requires openai). Do not uninstall them; pip check will break.
+#
+# EMBEDDING_PROVIDER=openai also makes sentence-transformers and torch
+# unnecessary at runtime, which is the only way this fits in a serverless
+# function -- torch alone is far over a Vercel function's size limit.
+openai==3.3.1
+langchain-openai==1.6.0
+
+# Unpinned on purpose: langchain. Nothing here imports it, but langchain-tavily
+# requires it, and pinning it directly implied this project chose it.

@@ -51,8 +51,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "missing_secrets": missing,
             "pinecone_index": settings.pinecone_index,
             "private_namespace": settings.private_namespace,
-            "embedding_model": settings.embedding_model,
-            "groq_model": settings.groq_model,
+            # Which providers this deployment actually resolved to. Reported
+            # because "which model answered?" is the first question about a bad
+            # answer, and the second is "was that the provider we thought?".
+            "llm_provider": settings.llm_provider,
+            "llm_model": settings.active_llm_model,
+            "embedding_provider": settings.embedding_provider,
+            "embedding_model": settings.active_embedding_model,
+            "embedding_dim": settings.embedding_dim,
             # Reported because tracing sends questions and retrieved policy text
             # off the deployment; whether it is on should be visible, not
             # inferred from a config file nobody reads in production.

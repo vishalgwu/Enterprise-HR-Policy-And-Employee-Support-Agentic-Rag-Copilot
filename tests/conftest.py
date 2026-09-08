@@ -136,20 +136,28 @@ TRACING_VARS = (
     "LANGSMITH_HIDE_OUTPUTS",
 )
 
+PROVIDER_VARS = ("OPENAI_API_KEY",)
+
 
 @pytest.fixture(autouse=True)
-def no_tracing(monkeypatch):
-    """Guarantee the suite never phones home, whatever the developer's .env says.
+def clean_process_env(monkeypatch):
+    """Give every test a process environment free of this project's exports.
 
-    Without this the suite is offline only by accident. `app.core.config` exports
-    tracing into `os.environ` at import, so on a machine with LangSmith enabled
-    every graph test uploads its run — turning a unit test into a network call
-    and shipping fake HR content to a third party.
+    Two things depend on it.
 
-    monkeypatch restores the original value on teardown, so this also contains
-    any test that switches tracing on deliberately.
+    Offline guarantee: `app.core.config` exports tracing into `os.environ` at
+    import, so on a machine with LangSmith enabled every graph test would upload
+    its run — turning a unit test into a network call and shipping fake HR
+    content to a third party.
+
+    Isolation: `OPENAI_API_KEY` is the one setting whose export name equals its
+    input alias, so a test that exports it configures every `Settings` built
+    afterwards — `_env_file=None` does not help, because environment outranks
+    the file. Clearing at setup rather than teardown is deliberate:
+    `monkeypatch.delenv(..., raising=False)` records nothing when the variable
+    is absent, so it has nothing to undo for one the test then creates.
     """
-    for name in TRACING_VARS:
+    for name in TRACING_VARS + PROVIDER_VARS:
         monkeypatch.delenv(name, raising=False)
 
 

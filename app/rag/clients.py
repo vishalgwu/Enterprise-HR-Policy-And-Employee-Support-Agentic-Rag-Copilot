@@ -16,22 +16,46 @@ from typing import Any
 from app.core.config import Settings, get_settings
 
 
-@lru_cache(maxsize=2)
-def get_embeddings(model_name: str | None = None):
-    """Local sentence-transformers embeddings, cached per model name.
+@lru_cache(maxsize=4)
+def _build_embeddings(provider: str, model_name: str, api_key: str):
+    """Cached per (provider, model). See `get_embeddings` for why."""
+    if provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
 
-    The cache is load-bearing: constructing this loads a ~90 MB model from disk.
-    Without it every retrieval that omits an explicit `embedding` would reload
-    the model, which is ruinous once a request handler retrieves per turn.
+        # text-embedding-3-* are already unit-normalised, so cosine on the
+        # Pinecone index is still equivalent to a dot product.
+        return OpenAIEmbeddings(model=model_name, api_key=api_key)
 
-    Vectors are normalised, so the cosine metric on the Pinecone index is
-    equivalent to a dot product.
-    """
     from langchain_huggingface import HuggingFaceEmbeddings
 
     return HuggingFaceEmbeddings(
-        model_name=model_name or get_settings().embedding_model,
+        model_name=model_name,
         encode_kwargs={"normalize_embeddings": True},
+    )
+
+
+def get_embeddings(model_name: str | None = None, settings: Settings | None = None):
+    """Embeddings for the configured provider.
+
+    `huggingface` (default) runs `all-MiniLM-L6-v2` locally: no per-query cost
+    and no employee question leaving the machine at embed time. `openai` calls
+    the API instead, which is the only option on a host that cannot ship torch --
+    a Vercel function, for one.
+
+    The cache is load-bearing for the local provider: constructing it loads a
+    ~90 MB model from disk, so without it every retrieval that omits an explicit
+    `embedding` would reload the model. That is ruinous once a request handler
+    retrieves per turn.
+
+    Switching provider changes the vector width, which the Pinecone index is
+    created with and cannot change. `Settings` rejects a contradictory
+    `EMBEDDING_DIM` at construction; a new model still needs a new index name.
+    """
+    settings = settings or get_settings()
+    provider = settings.embedding_provider
+    api_key = settings.require("openai_api_key") if provider == "openai" else ""
+    return _build_embeddings(
+        provider, model_name or settings.active_embedding_model, api_key
     )
 
 
@@ -44,20 +68,35 @@ def get_llm(
     model: str | None = None,
     temperature: float | None = None,
     settings: Settings | None = None,
+    provider: str | None = None,
 ):
-    """Groq chat model, for routing, grading, rewriting and generation.
+    """Chat model for routing, grading, rewriting and generation.
+
+    Groq by default; `LLM_PROVIDER=openai` switches to ChatOpenAI. Both satisfy
+    the same contract the agent depends on -- `.with_structured_output` binding
+    a Pydantic model via function calling -- so no node changes when the
+    provider does.
 
     Left uncached: callers legitimately want different temperatures for grading
     (0, deterministic) and for writing prose, and constructing one is cheap.
     """
+    settings = settings or get_settings()
+    provider = provider or settings.llm_provider
+    temperature = settings.llm_temperature if temperature is None else temperature
+
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model or settings.openai_model,
+            temperature=temperature,
+            api_key=settings.require("openai_api_key"),
+        )
+
     from langchain_groq import ChatGroq
 
-    settings = settings or get_settings()
     settings.require("groq_api_key")
-    return ChatGroq(
-        model=model or settings.groq_model,
-        temperature=settings.groq_temperature if temperature is None else temperature,
-    )
+    return ChatGroq(model=model or settings.groq_model, temperature=temperature)
 
 
 def get_web_search(max_results: int | None = None, settings: Settings | None = None):
@@ -87,13 +126,20 @@ def is_rate_limit(exc: BaseException) -> bool:
     unless it is named. Groq's free tier caps tokens per *day*, so this does not
     clear in a few seconds -- observed:
     `429 ... tokens per day (TPD): Limit 200000, Used 199771`.
+
+    Covers both providers: `openai.RateLimitError` and Groq's rate-limit error
+    share the class name, and both carry status 429.
     """
     if type(exc).__name__ == "RateLimitError":
         return True
     if getattr(exc, "status_code", None) == 429:
         return True
     text = str(exc).lower()
-    return "rate limit" in text or "error code: 429" in text
+    return (
+        "rate limit" in text
+        or "error code: 429" in text
+        or "insufficient_quota" in text  # OpenAI: billing exhausted, not throttled
+    )
 
 
 def web_results_to_text(result: Any) -> str:

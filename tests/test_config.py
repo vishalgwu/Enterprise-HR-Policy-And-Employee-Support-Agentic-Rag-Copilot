@@ -12,15 +12,46 @@ from app.core.config import Settings, get_settings
 def test_short_env_names_map_to_fields():
     """.env uses GROQ_API; the field is groq_api_key."""
     s = Settings(GROQ_API="abc", TAVILY_API="def", PINECONE_API="ghi")
-    assert s.groq_api_key == "abc"
-    assert s.tavily_api_key == "def"
-    assert s.pinecone_api_key == "ghi"
+    assert s.require("groq_api_key") == "abc"
+    assert s.require("tavily_api_key") == "def"
+    assert s.require("pinecone_api_key") == "ghi"
+
+
+def test_secrets_never_appear_in_a_repr_or_a_traceback():
+    """`log.info("%s", settings)` or an unhandled exception must not leak keys."""
+    s = Settings(
+        GROQ_API="gsk-supersecret",
+        TAVILY_API="tvly-supersecret",
+        PINECONE_API="pc-supersecret",
+        OPENAI_API_KEY="sk-supersecret",
+        LANGSMITH_API_KEY="lsv2-supersecret",
+    )
+    for rendered in (repr(s), str(s), str(s.model_dump())):
+        assert "supersecret" not in rendered
+    # ...and the real values are still reachable deliberately.
+    assert s.require("groq_api_key") == "gsk-supersecret"
+
+
+def test_a_validation_error_does_not_echo_the_input_secrets():
+    """A model_validator that raises puts the whole input dict in the error.
+
+    Observed: a dimension mismatch produced a pydantic ValidationError whose
+    text began `input_value={'GROQ_API': 'gsk_...`. That error reaches logs and
+    tracebacks, so the check that can fail lives outside validation.
+    """
+    s = Settings(
+        GROQ_API="gsk-supersecret", EMBEDDING_PROVIDER="openai", EMBEDDING_DIM=384
+    )
+    with pytest.raises(ValueError) as excinfo:
+        s.validate_embedding()
+    assert "supersecret" not in str(excinfo.value)
+    assert "contradicts" in str(excinfo.value)
 
 
 def test_missing_secret_is_not_fatal_at_construction():
     """Importing without credentials must stay possible: tests, --help, Docker."""
     s = Settings(GROQ_API="", TAVILY_API="", PINECONE_API="")
-    assert s.missing_secrets() == ["GROQ_API", "TAVILY_API", "PINECONE_API"]
+    assert sorted(s.missing_secrets()) == ["GROQ_API", "PINECONE_API", "TAVILY_API"]
 
 
 def test_require_names_the_env_var_the_user_has_to_set():
@@ -142,17 +173,119 @@ def test_redaction_can_be_turned_off_deliberately():
     _clear_tracing_env()
 
 
-def test_openai_key_is_never_exported_by_this_project(monkeypatch):
-    """Nothing here uses OpenAI; langchain-openai is only a Pinecone dependency.
+def test_openai_key_is_not_exported_while_no_provider_uses_it(monkeypatch):
+    """An unused key stays out of the process environment.
 
-    .env may carry OPENAI_API_KEY, but pydantic-settings reads the file without
-    exporting it and export_client_env does not forward it, so no OpenAI client
-    can be configured by accident. This fails if anyone reintroduces
-    load_dotenv(), which would export the whole file.
+    langchain-openai is installed as a langchain-pinecone dependency, so a key
+    in os.environ is enough for it to configure itself. It only belongs there
+    when a provider is actually set to openai.
     """
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    Settings(_env_file=None).export_client_env()
+    Settings(_env_file=None, OPENAI_API_KEY="sk-unused").export_client_env()
     assert "OPENAI_API_KEY" not in os.environ
+
+
+def test_openai_key_is_exported_when_a_provider_uses_it(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    Settings(
+        _env_file=None, OPENAI_API_KEY="sk-used", LLM_PROVIDER="openai"
+    ).export_client_env()
+    assert os.environ["OPENAI_API_KEY"] == "sk-used"
+
+
+# --- Provider selection ------------------------------------------------------
+
+
+def test_groq_is_the_default_provider_for_both():
+    s = Settings(_env_file=None)
+    assert s.llm_provider == "groq"
+    assert s.embedding_provider == "huggingface"
+    assert not s.uses_openai
+
+
+def test_an_unknown_provider_is_rejected_at_construction():
+    with pytest.raises(Exception):
+        Settings(_env_file=None, LLM_PROVIDER="anthropic")
+
+
+def test_active_model_follows_the_provider():
+    groq = Settings(_env_file=None)
+    assert groq.active_llm_model == groq.groq_model
+    assert groq.active_embedding_model == groq.embedding_model
+
+    openai = Settings(_env_file=None, LLM_PROVIDER="openai", EMBEDDING_PROVIDER="openai")
+    assert openai.active_llm_model == openai.openai_model
+    assert openai.active_embedding_model == openai.openai_embedding_model
+
+
+def test_required_secrets_follow_the_providers():
+    """An all-OpenAI deployment must not be reported broken for lacking Groq."""
+    groq = Settings(_env_file=None, PINECONE_API="p", TAVILY_API="t")
+    assert groq.missing_secrets() == ["GROQ_API"]
+
+    openai = Settings(
+        _env_file=None,
+        PINECONE_API="p",
+        TAVILY_API="t",
+        LLM_PROVIDER="openai",
+        EMBEDDING_PROVIDER="openai",
+    )
+    assert openai.missing_secrets() == ["OPENAI_API_KEY"]
+
+    mixed = Settings(
+        _env_file=None, PINECONE_API="p", TAVILY_API="t", EMBEDDING_PROVIDER="openai"
+    )
+    assert mixed.missing_secrets() == ["GROQ_API", "OPENAI_API_KEY"]
+
+
+# --- Embedding dimension -----------------------------------------------------
+
+
+def test_embedding_dim_is_derived_from_the_active_model():
+    """Switching provider without the dimension is the easy mistake."""
+    assert Settings(_env_file=None).embedding_dim == 384
+    assert Settings(_env_file=None, EMBEDDING_PROVIDER="openai").embedding_dim == 1536
+    assert (
+        Settings(
+            _env_file=None,
+            EMBEDDING_PROVIDER="openai",
+            OPENAI_EMBEDDING_MODEL="text-embedding-3-large",
+        ).embedding_dim
+        == 3072
+    )
+
+
+def test_a_dimension_contradicting_the_model_is_rejected():
+    """Otherwise it surfaces as an opaque Pinecone upsert failure."""
+    with pytest.raises(ValueError, match="contradicts"):
+        Settings(
+            _env_file=None, EMBEDDING_PROVIDER="openai", EMBEDDING_DIM=384
+        ).validate_embedding()
+
+
+def test_an_unknown_model_must_state_its_dimension():
+    with pytest.raises(ValueError, match="must be set explicitly"):
+        Settings(_env_file=None, EMBEDDING_MODEL="some/unlisted-model").validate_embedding()
+
+    ok = Settings(
+        _env_file=None, EMBEDDING_MODEL="some/unlisted-model", EMBEDDING_DIM=512
+    )
+    ok.validate_embedding()
+    assert ok.embedding_dim == 512
+
+
+def test_validate_required_also_checks_the_embedding_dimension():
+    s = Settings(
+        _env_file=None,
+        PINECONE_API="p",
+        TAVILY_API="t",
+        GROQ_API="g",
+        EMBEDDING_PROVIDER="openai",
+        OPENAI_API_KEY="o",
+        EMBEDDING_DIM=384,
+    )
+    with pytest.raises(ValueError, match="contradicts"):
+        s.validate_required()
 
 
 def test_disabled_tracing_clears_a_switch_left_in_the_environment():
