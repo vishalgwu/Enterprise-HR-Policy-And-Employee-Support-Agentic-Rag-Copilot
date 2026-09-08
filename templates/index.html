@@ -10,7 +10,11 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
   <link rel="stylesheet" href="/static/css/style.css" />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#129504;</text></svg>" />
+  <!-- The angle brackets must be percent-encoded. Written raw, the browser
+       rejected the data URI and fell back to /favicon.ico, which this app does
+       not serve -- so every page load logged a 404 and the tab showed a blank
+       icon. Same encoding the grain texture in style.css uses. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E&#129504;%3C/text%3E%3C/svg%3E" />
 </head>
 
 <body
