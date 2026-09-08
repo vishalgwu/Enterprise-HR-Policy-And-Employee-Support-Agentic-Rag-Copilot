@@ -154,11 +154,25 @@ It must be a decision, not something a stray key in the environment turns on. `/
 
 **Traces are redacted by default, and that is what makes tracing safe to enable here.**
 `langsmith_hide_inputs` / `langsmith_hide_outputs` default to `True`, exported as
-`LANGSMITH_HIDE_INPUTS` / `LANGSMITH_HIDE_OUTPUTS`. LangSmith still receives the run tree, timings,
-routing and grading decisions, token counts and errors — everything needed to debug the agent — but
-not the question text or the retrieved policy. Verified end to end against the live service: a probe
-run carrying a sentinel string arrived with `inputs={}` and `outputs=None`. `/health` reports
-`tracing_redacted` so "we turned it off to debug" cannot quietly become production.
+`LANGSMITH_HIDE_INPUTS` / `LANGSMITH_HIDE_OUTPUTS`. Every run arrives with empty `inputs` and
+`outputs`, so a LangSmith trace shows "No inputs / No outputs" on every node. **That is the control
+working, not a misconfiguration** — expect it, and do not "fix" it.
+
+Measured against the live project rather than assumed, over 12 consecutive runs: `inputs` and
+`outputs` were empty on all of them, while **node names, run type, the run tree, timings, token
+counts and errors all arrived** (`grade_web_evidence` 1511 tokens / 367 ms, `tavily_search`
+2387 ms). An earlier revision of this file also claimed the *routing and grading decisions* survive.
+They do not — a decision is that node's **output**, so it is redacted with everything else. What
+survives is the **path**: because the graph's branches are deterministic given a decision, seeing
+`grade_web_evidence -> generate_from_web` in the tree tells you the web grade was `good`, and
+`answer_insufficient` tells you everything graded weak. The decision *values*, the citations and the
+latency live in the SQLite audit log behind `/api/audit`, which is the right place for them anyway:
+they sit beside the employee's question, which must not leave the deployment.
+
+So the split is deliberate. **LangSmith answers "where did the time and tokens go, and what
+broke?"; `/api/audit` answers "what was asked and what was decided?"** Reach for the second when
+debugging an answer. `/health` reports `tracing_redacted` so "we turned it off to debug" cannot
+quietly become production.
 
 **These must be the literal string `"true"`.** `langsmith.Client.__init__` does
 `ls_utils.get_env_var("HIDE_INPUTS") == "true"`, an exact comparison — `"True"` or `"1"` reads as

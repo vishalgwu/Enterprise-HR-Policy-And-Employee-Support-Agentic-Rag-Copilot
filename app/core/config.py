@@ -309,11 +309,17 @@ class Settings(BaseSettings):
     )
 
     # Payload redaction, defaulting to ON because this system traces employee HR
-    # questions and internal policy text. With these set, LangSmith still
-    # receives the run tree, timings, routing and grading decisions, token
-    # counts and errors -- everything needed to debug the agent -- but not the
-    # question text or the retrieved policy. Set them false in .env when
-    # debugging a specific answer, deliberately and temporarily.
+    # questions and internal policy text. With these set, every run reaches
+    # LangSmith with empty `inputs` and `outputs` -- so the UI shows "No inputs /
+    # No outputs" on every node, which is the control working rather than a
+    # misconfiguration. Verified over 12 live runs: node names, the run tree,
+    # timings, token counts and errors all still arrive.
+    #
+    # A node's *decision* is its output, so the route and the grades are
+    # redacted too; the path they produced is still readable from which nodes
+    # ran. The values live in the audit log behind /api/audit, beside the
+    # question they were made about. Set these false in .env only when debugging
+    # a specific answer, deliberately and temporarily.
     langsmith_hide_inputs: bool = Field(
         default=True, validation_alias="LANGSMITH_HIDE_INPUTS"
     )

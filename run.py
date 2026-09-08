@@ -70,7 +70,7 @@ def describe(settings) -> list[str]:
     elif settings.tracing_redacted:
         lines.append(
             f"  langsmith   on, redacted -> project {settings.langsmith_project!r} "
-            "(run tree, timings and decisions; no question or policy text)"
+            "(run tree, timings, tokens; no question, policy, decision or answer)"
         )
     else:
         lines.append(

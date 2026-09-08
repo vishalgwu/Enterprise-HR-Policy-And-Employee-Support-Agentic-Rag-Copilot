@@ -480,13 +480,30 @@ environment so a stray key cannot turn it on.
 
 The part that matters for an HR product: **traces are redacted by default.**
 
+Measured against the live project over 12 consecutive runs, not assumed:
+
 | | Uploaded to LangSmith |
 |---|---|
-| Run tree, node sequence, timings | yes |
-| Routing and grading decisions, retry count | yes |
-| Token counts, errors, latency | yes |
+| Run tree, node names, step order | yes |
+| Timings and latency | yes |
+| Token counts | yes |
+| Errors | yes |
 | The employee's question | **no** |
 | Retrieved policy text | **no** |
+| The answer | **no** |
+| Routing and grading decision *values* | **no** — a decision is a node's output |
+
+Every node therefore shows "No inputs / No outputs" in the LangSmith UI. **That is the control
+working, not a misconfiguration.**
+
+The decisions are not lost, only kept locally. The *path* stays readable from the run tree, because
+the graph's branches are deterministic given a decision — `grade_web_evidence → generate_from_web`
+means the web grade was `good`; `answer_insufficient` means everything graded weak. The decision
+values, the citations and the per-node trace live in the audit log behind `/api/audit`, beside the
+question they were made about — which is where HR-sensitive data belongs.
+
+So: **LangSmith answers "where did the time and the tokens go, and what broke?"; `/api/audit`
+answers "what was asked, and what was decided?"**
 
 `LANGSMITH_HIDE_INPUTS` and `LANGSMITH_HIDE_OUTPUTS` default to true. That is enough to debug the
 agent — which path a question took, where it was slow, what failed — without employee questions or
@@ -572,8 +589,8 @@ Enterprise HR Policy Agentic RAG Copilot - development
   embeddings  huggingface / sentence-transformers/all-MiniLM-L6-v2 (384d)
   pinecone    hr-policy-copilot / hr-docs
   admin api   OFF (no ADMIN_API_KEY)
-  langsmith   on, redacted -> project 'Hr-agentic-ai' (run tree, timings and decisions;
-              no question or policy text)
+  langsmith   on, redacted -> project 'Hr-agentic-ai' (run tree, timings, tokens;
+              no question, policy, decision or answer)
   console     http://localhost:8000/
 ```
 
