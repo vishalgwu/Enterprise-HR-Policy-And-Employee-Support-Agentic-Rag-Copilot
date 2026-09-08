@@ -75,6 +75,44 @@ KNOWN_EMBEDDING_DIMS: dict[str, int] = {
 }
 
 
+def _normalise_model(name: str) -> str:
+    """Lower-case a model id and drop its org prefix, for dimension lookup.
+
+    `all-MiniLM-L6-v2` and `sentence-transformers/all-MiniLM-L6-v2` name the
+    same model -- sentence-transformers resolves the bare form -- so writing the
+    short one in `.env` must not read as an unknown model.
+    """
+    return name.strip().lower().rsplit("/", 1)[-1]
+
+
+_DIMS_BY_NORMALISED_MODEL: dict[str, int] = {
+    _normalise_model(model): dim for model, dim in KNOWN_EMBEDDING_DIMS.items()
+}
+
+# Two entries that normalise to one key would silently shadow each other, and
+# the survivor would hand out the wrong dimension for the loser. Fail at import
+# instead: this is a source-code mistake, not a configuration one.
+if len(_DIMS_BY_NORMALISED_MODEL) != len(KNOWN_EMBEDDING_DIMS):
+    raise RuntimeError(
+        "Two entries in KNOWN_EMBEDDING_DIMS normalise to the same key; "
+        "distinct models must stay distinguishable after _normalise_model."
+    )
+
+
+def known_embedding_dim(model: str) -> int | None:
+    """Output width of a known embedding model, or None if it is not listed.
+
+    Matching is **exact** after normalisation, deliberately. A tempting
+    alternative is to fall back to substring matching -- treat anything
+    containing "all-minilm" as 384-d -- but a guessed dimension builds a
+    Pinecone index that cannot be resized, so a wrong guess costs a full
+    teardown and re-ingest while an unknown model costs one `EMBEDDING_DIM=`
+    line. Returning None so the caller can say "state it explicitly" is the
+    cheaper failure.
+    """
+    return _DIMS_BY_NORMALISED_MODEL.get(_normalise_model(model))
+
+
 class Settings(BaseSettings):
     """Every tunable value in one validated object.
 
@@ -290,7 +328,7 @@ class Settings(BaseSettings):
         only the dimension and the model.
         """
         if not self.embedding_dim:
-            expected = KNOWN_EMBEDDING_DIMS.get(self.active_embedding_model)
+            expected = known_embedding_dim(self.active_embedding_model)
             if expected:
                 object.__setattr__(self, "embedding_dim", expected)
         return self
@@ -303,7 +341,7 @@ class Settings(BaseSettings):
         index that then has to be recreated under a new name.
         """
         model = self.active_embedding_model
-        expected = KNOWN_EMBEDDING_DIMS.get(model)
+        expected = known_embedding_dim(model)
         if not self.embedding_dim:
             raise ValueError(
                 f"EMBEDDING_DIM must be set explicitly for unknown model {model!r}."

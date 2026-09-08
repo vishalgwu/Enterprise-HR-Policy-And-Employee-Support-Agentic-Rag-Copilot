@@ -7,7 +7,7 @@ import os
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings, get_settings, known_embedding_dim
 
 
 def test_short_env_names_map_to_fields():
@@ -256,6 +256,37 @@ def test_embedding_dim_is_derived_from_the_active_model():
         ).embedding_dim
         == 3072
     )
+
+
+@pytest.mark.parametrize(
+    "written,expected",
+    [
+        ("sentence-transformers/all-MiniLM-L6-v2", 384),
+        ("all-MiniLM-L6-v2", 384),  # the bare form sentence-transformers accepts
+        ("ALL-MINILM-L6-V2", 384),
+        ("  text-embedding-3-small  ", 1536),
+        ("all-mpnet-base-v2", 768),
+    ],
+)
+def test_a_known_model_resolves_however_its_name_is_written(written, expected):
+    """`all-MiniLM-L6-v2` and the org-prefixed form are the same model.
+
+    Writing the short one must not read as an unknown model and demand an
+    explicit EMBEDDING_DIM for a dimension the project already knows.
+    """
+    assert known_embedding_dim(written) == expected
+    assert Settings(_env_file=None, EMBEDDING_MODEL=written).embedding_dim == expected
+
+
+def test_an_unlisted_model_is_not_guessed_at_from_a_substring():
+    """Matching is exact after normalising -- never substring.
+
+    A guessed dimension builds a Pinecone index that cannot be resized, so a
+    wrong guess costs a teardown and re-ingest. An unknown model costs one
+    EMBEDDING_DIM line.
+    """
+    assert known_embedding_dim("acme/all-minilm-l6-v2-distilled-1024d") is None
+    assert known_embedding_dim("text-embedding-3-small-v2") is None
 
 
 def test_a_dimension_contradicting_the_model_is_rejected():
