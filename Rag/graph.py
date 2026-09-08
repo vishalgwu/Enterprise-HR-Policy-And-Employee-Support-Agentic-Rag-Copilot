@@ -19,12 +19,14 @@ Nodes are closures over the LLM, retriever and search tool so a run constructs
 each once, and tests can inject fakes.
 """
 
+import sys
+
 if __package__ in (None, ""):  # allow `python Rag/graph.py`
-    import sys
-    from pathlib import Path
+    from pathlib import Path as _Path
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
+from pathlib import Path
 from typing import Literal
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -265,11 +267,31 @@ def build_graph(llm=None, retriever=None, web_search=None, embedding=None, verbo
         builder.add_node(name, n[name])
 
     builder.add_edge(START, "route_question")
-    builder.add_conditional_edges("route_question", n["route_after_router"])
+    # The path maps are explicit rather than inferred from the condition's
+    # return annotation: they are what the rendered diagram draws, and they make
+    # a branch that returns an unmapped name fail at compile time instead of at
+    # run time on whichever question happens to reach it first.
+    builder.add_conditional_edges(
+        "route_question",
+        n["route_after_router"],
+        {"retrieve_kb": "retrieve_kb", "direct_answer": "direct_answer"},
+    )
     builder.add_edge("retrieve_kb", "grade_kb_evidence")
-    builder.add_conditional_edges("grade_kb_evidence", n["decide_after_kb_grade"])
+    builder.add_conditional_edges(
+        "grade_kb_evidence",
+        n["decide_after_kb_grade"],
+        {"generate_from_kb": "generate_from_kb", "search_web": "search_web"},
+    )
     builder.add_edge("search_web", "grade_web_evidence")
-    builder.add_conditional_edges("grade_web_evidence", n["decide_after_web_grade"])
+    builder.add_conditional_edges(
+        "grade_web_evidence",
+        n["decide_after_web_grade"],
+        {
+            "generate_from_web": "generate_from_web",
+            "rewrite_query": "rewrite_query",
+            "answer_insufficient": "answer_insufficient",
+        },
+    )
     # A rewrite retries the private KB first: internal policy is the preferred
     # source, and a vocabulary mismatch is the likeliest cause of a weak hit.
     builder.add_edge("rewrite_query", "retrieve_kb")
@@ -290,8 +312,60 @@ def ask(question: str, graph=None, verbose: bool = True) -> AgentState:
     return graph.invoke(initial_state(question))
 
 
+# --- Visualisation -----------------------------------------------------------
+# Rendered from the compiled graph, so a diagram can never drift from the wiring.
+
+DIAGRAM_PATH = config.PROJECT_ROOT / "docs" / "agent-graph.md"
+
+
+def graph_mermaid(graph=None) -> str:
+    """Mermaid source for the compiled graph."""
+    return (graph or build_graph(verbose=False)).get_graph().draw_mermaid()
+
+
+def graph_ascii(graph=None) -> str:
+    """ASCII rendering. Requires the optional `grandalf` package."""
+    return (graph or build_graph(verbose=False)).get_graph().draw_ascii()
+
+
+def save_graph_diagram(path: Path | None = None, graph=None) -> Path:
+    """Write the diagram to a markdown file. GitHub renders mermaid inline."""
+    path = Path(path) if path else DIAGRAM_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = (
+        "# Agent graph\n\n"
+        "Generated from the compiled graph by "
+        "`python Rag/graph.py --diagram`. Do not edit by hand.\n\n"
+        "Solid arrows are unconditional edges; dotted arrows are branches.\n\n"
+        "```mermaid\n" + graph_mermaid(graph).strip() + "\n```\n"
+    )
+    path.write_bytes(body.encode("utf-8"))
+    return path
+
+
+def save_graph_png(path: Path | None = None, graph=None) -> Path:
+    """Write a PNG of the graph.
+
+    Not called anywhere by default: `draw_mermaid_png` posts the graph to the
+    public mermaid.ink service. Harmless here (node names only) but it is a
+    network call to a third party, so it stays opt-in.
+    """
+    path = Path(path) if path else config.PROJECT_ROOT / "docs" / "agent-graph.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    png = (graph or build_graph(verbose=False)).get_graph().draw_mermaid_png()
+    path.write_bytes(png)
+    return path
+
+
 def main():
     config.configure_stdout()
+
+    if "--diagram" in sys.argv:
+        written = save_graph_diagram()
+        print(graph_mermaid())
+        print(f"\nWrote {written}")
+        return
+
     graph = build_graph()
 
     questions = [

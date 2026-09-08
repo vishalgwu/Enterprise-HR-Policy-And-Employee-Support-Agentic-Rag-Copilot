@@ -33,20 +33,29 @@ Ten nodes in [Rag/graph.py](Rag/graph.py). The graph never answers from model me
 answer is traceable to internal policy, to cited web results, or to an explicit admission that
 neither had the evidence.
 
+```mermaid
+graph TD
+    S([START]) --> route[route_question]
+    route -. "direct" .-> direct[direct_answer]
+    route -. "kb" .-> retrieve[retrieve_kb]
+    retrieve --> gradekb[grade_kb_evidence]
+    gradekb -. "good" .-> genkb[generate_from_kb]
+    gradekb -. "weak" .-> web[search_web]
+    web --> gradeweb[grade_web_evidence]
+    gradeweb -. "good" .-> genweb[generate_from_web]
+    gradeweb -. "weak, retries left" .-> rewrite[rewrite_query]
+    gradeweb -. "weak, retries spent" .-> insufficient[answer_insufficient]
+    rewrite --> retrieve
+    direct --> E([END])
+    genkb --> E
+    genweb --> E
+    insufficient --> E
 ```
-START → route
-  direct  ─────────────────────────────────────────► direct_answer          → END
-  kb      → retrieve_kb → grade_kb
-                            good ──────────────────► generate_from_kb       → END
-                            weak → search_web → grade_web
-                                                 good ► generate_from_web   → END
-                                                 weak → retries left?
-                                                          yes → rewrite_query ─┐
-                                                          no  ► answer_insufficient → END
-                                                                                │
-                            ◄───────────────────────────────────────────────────┘
-                            (rewrite returns to the private KB, not to the web)
-```
+
+Dotted arrows are branches taken on a structured decision. Regenerate the diagram straight from
+the compiled graph with `python Rag/graph.py --diagram`, which writes
+[docs/agent-graph.md](docs/agent-graph.md); a structural test asserts the compiled edge set matches
+this design exactly, so the picture cannot drift from the code.
 
 **A rewrite loops back to the KB, not to web search.** A weak retrieval is usually a vocabulary
 mismatch between how an employee phrases a question and how policy is written, so the rewritten
@@ -92,7 +101,7 @@ Verified live, all four terminal paths plus the loop:
                     ┌───────────────┴──────────────┐
                     │                              │
              chunks returned                 empty result
-             → grade & answer          → rewrite / web search   (planned)
+             → grade & answer          → rewrite / web search
 ```
 
 **Two corpora, one index, separated by namespace.** Scraped public content and internal policy are
@@ -148,7 +157,9 @@ The graph branches on LLM decisions, so those decisions are Pydantic models boun
 | `RouteDecision.route` | `kb` / `direct` | Does this message need a policy lookup at all? |
 | `EvidenceGrade.grade` | `good` / `weak` | Can the retrieved evidence actually answer the question? |
 
-Measured on a labelled set: **router 14/14, grader 7/7.**
+Measured on a labelled set: **router 16/16, grader 7/7.** The router set covers greetings and
+questions about the assistant itself (`direct`) alongside policy questions and external factual
+questions (`kb`) — both classes matter, because a prompt tightened for one loosens the other.
 
 The grader's value is in the near misses. It correctly returns `weak` for *"What is the mileage
 reimbursement rate per kilometre?"* — the evidence comes from the right document, the expense
@@ -211,7 +222,8 @@ Rag/clients.py        embeddings (cached), Groq chat model, Tavily search
 Rag/loaders.py        web + markdown loading, chunking, chunk ids, evidence rendering
 Rag/vectorstore.py    Pinecone index management and retrieval, parameterised by namespace
 Rag/schemas.py        structured routing/grading decisions, AgentState
-Rag/graph.py          the 10-node LangGraph agent
+Rag/graph.py          the 10-node LangGraph agent + diagram rendering
+docs/agent-graph.md   diagram generated from the compiled graph
 
 Rag/Agentic_rag.py    entry point: public web corpus
 Rag/private_kb.py     entry point: private KB
