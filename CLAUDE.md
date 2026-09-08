@@ -9,8 +9,9 @@ architecture are checked in: `docs/Enterprise_HR_Agentic_RAG_Problem_Statement_D
 and `docs/architecture.png`. Read them before designing anything new — they name the endpoints, the
 data layer, the roles and the deployment target.
 
-The retrieval stack and the 10-node LangGraph agent are complete. The FastAPI surface is `/health`
-only; SQLite persistence, the frontend, and Docker/DigitalOcean packaging are not built.
+The retrieval stack, the 10-node LangGraph agent and the HTTP surface are complete: `/health`,
+`/api/chat`, and the admin-gated `/api/upload` and `/api/audit`, over a SQLite audit log. The
+frontend and Docker/DigitalOcean packaging are not built.
 
 ## Environment and commands
 
@@ -21,7 +22,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 158 tests, offline, no credentials needed
+pytest                                 # 195 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -63,7 +64,10 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 | `app/agent/graph.py` | wiring and compilation |
 | `app/services/ingestion.py` | load -> chunk -> index, as one door. A facade over `rag`, never a second loader |
 | `app/services/copilot.py` | `Copilot` facade and `AnswerResult` — the API contract |
-| `app/main.py`, `app/api/` | FastAPI |
+| `app/services/audit.py` | `AuditStore` — the SQLite record of every answered question |
+| `app/api/deps.py` | what a route depends on, read off `app.state` |
+| `app/api/routes.py` | the `ops` (`/health`) and `api` (`/api/*`) routers |
+| `app/main.py` | `create_app` — builds the app and wires the services onto `app.state` |
 | `scripts/*` | thin CLI callers |
 
 There is no `test.py` or `data/sample_kb/` at the repo root; both existed briefly and were removed.
@@ -479,6 +483,65 @@ that import stops resolving.
 `test_the_compiled_graph_matches_the_documented_design` asserts the compiled edge set exactly. It
 is what keeps the README's mermaid diagram and `docs/agent-graph.md` honest, so update it
 deliberately when the graph changes rather than loosening it.
+
+## API notes
+
+**`create_app` takes its services as arguments and puts them on `app.state`; the routes read them
+back through `app/api/deps.py`.** That is the same injection the rest of the codebase has, carried
+up to the HTTP layer: `create_app(settings, copilot=..., audit=...)` is how the API tests run
+offline against a graph of fakes and a `tmp_path` database. **Do not wire production through
+`dependency_overrides`** — it is a test hook, and once the app uses it there is no way to tell which
+overrides are the application and which are the test.
+
+**Nothing `create_app` builds touches the network or the disk.** `Copilot` compiles its graph on
+first use and `AuditStore` creates its schema on first use, because `app.main` builds an application
+at import — a constructor that reached Pinecone or wrote a database file would make importing the
+module do both. `test_building_the_app_touches_neither_network_nor_disk` pins it.
+
+**No handler puts an exception's text in `detail`.** A provider error carries URLs, request ids and
+sometimes the offending payload, and this process holds API keys; `detail=str(exc)` is how one
+reaches a browser. Failures are logged with their traceback and answered with a fixed sentence.
+`test_a_copilot_failure_does_not_leak_the_provider_error` posts a question to a copilot that raises
+`"401 from https://api.groq.com key=gsk_live_SECRET"` and asserts neither the key nor the host
+appears in the response.
+
+**`/chat` and `/audit` are `def`, not `async def`.** Starlette runs a sync handler in a threadpool; a
+question costs seconds of LLM round trips, and an `async def` handler doing that blocks every other
+request in the process. `/upload` is `async def` because it streams a request body, and hands the
+blocking embed-and-upsert to `run_in_threadpool` explicitly. Adding a route means choosing between
+these deliberately.
+
+**The admin gate refuses twice, and the order is the point.** `require_admin` returns 503 when no key
+is configured — *before* looking at the header — so an unset key can never be matched by an absent
+or empty one. A reference implementation defaulted to `"change-me-in-production"` and compared with
+`!=`, which means an unset key plus an absent header compares equal and every caller is an admin.
+The key itself goes through `settings.check_admin_key`, never `==`.
+
+**`/audit` is admin-only because every row is an employee's question and the answer they got.** That
+is HR-sensitive by definition, and is the reason the log is an endpoint behind a key rather than a
+file anyone with shell access can read. `audit_db_path`, `upload_dir` and `kb_dir` are settings so a
+container can mount them; `*.db` is gitignored.
+
+**`AuditStore.record` never raises.** A full disk, a locked database or a read-only mount degrades
+the audit trail, and that is much cheaper than turning a working answer into a 500. It returns
+`None`, `audit_id` comes back null, and the reason is logged at ERROR so an unwritten log is visible
+in the logs rather than only in its own absence. It opens a connection per call: FastAPI runs `def`
+endpoints in a threadpool, so one long-lived `sqlite3` connection would need `check_same_thread`
+and its own locking.
+
+**`/api/audit/stats` is declared before `/api/audit/{entry_id}`.** Declared after, the path parameter
+claims `"stats"` and answers with a validation error.
+`test_audit_stats_are_not_shadowed_by_the_id_route` pins the ordering.
+
+**An upload's filename is attacker-controlled text, not a path.** `_safe_filename` strips both
+separators, not just the platform's, because a Windows client posting to a Linux container sends
+backslashes that `Path.name` there would keep. The size cap is enforced *while streaming* — `await
+file.read()` with no argument materialises the whole body first, which is a way to exhaust the
+process before any limit applies — and a refused upload leaves no partial file behind.
+
+**The upload ingest never prunes,** and `ingest_upload` is where that is decided. Pruning reconciles
+a namespace against a directory on disk; for a single-file upload it would delete the entire rest of
+the corpus.
 
 ## The build plan
 

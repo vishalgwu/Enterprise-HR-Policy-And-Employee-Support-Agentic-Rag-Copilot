@@ -25,17 +25,19 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 158 tests, no network, no credentials | Implemented |
+| Test suite — 195 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
-| FastAPI service | `/health` only; `/chat`, `/upload`, `/ingest`, `/feedback`, `/admin`, `/logs` not yet built |
-| SQLite audit layer (chat history, feedback, traces) | Not yet built |
+| FastAPI service | `/health`, `/api/chat`, `/api/upload`, `/api/audit` implemented |
+| SQLite audit layer (question, answer, decisions, trace, latency) | Implemented |
+| Feedback capture and an admin console | Not yet built |
 | HTML/CSS/JS frontend | Not yet built |
 | Docker + DigitalOcean deployment | Not yet built |
 
-The agent graph is complete and runs end to end, and `app.services.copilot` is the seam the API
-will call. What remains is the rest of the HTTP surface, persistence, a UI, and packaging.
+The agent graph runs end to end behind an HTTP surface: employees POST to `/api/chat`, HR staff
+upload policy through `/api/upload`, and every answered question is written to a SQLite audit log
+readable at `/api/audit`. What remains is feedback capture, a UI, and packaging.
 
 The reference brief and target architecture this is built against are in
 [docs/](docs/): `Enterprise_HR_Agentic_RAG_Problem_Statement_DigitalOcean.pdf` and
@@ -111,6 +113,91 @@ Verified live, all four terminal paths plus the loop:
 | `"Who won the football World Cup in 2022?"` | KB returns 0 chunks → `web_search`, flagged as public info, not policy |
 | KB and web both empty (injected) | one rewrite, then `insufficient_evidence`; loop terminates |
 | KB empty then populated (injected) | recovers to `private_kb` after the rewrite |
+
+---
+
+## The HTTP API
+
+Two audiences, two routers. `/health` is unprefixed and open, because a load balancer polls it and
+it has to answer at every environment and without credentials. Everything else is under `/api`, and
+everything that can change what the copilot says — or read what it has said — is behind an admin
+key.
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| `GET` | `/health` | open | liveness, resolved providers, missing secrets by name |
+| `POST` | `/api/chat` | open | ask one question; returns the answer, its citations and its trace |
+| `POST` | `/api/upload` | `X-Admin-Key` | add one document to the private KB |
+| `GET` | `/api/audit` | `X-Admin-Key` | the answered-question log, newest first, paged |
+| `GET` | `/api/audit/stats` | `X-Admin-Key` | how questions were resolved, and how often |
+| `GET` | `/api/audit/{id}` | `X-Admin-Key` | one answered question in full |
+
+Interactive docs are at `/docs` outside production. In production they are withheld — they
+enumerate every route, admin ones included — while `/health` stays open.
+
+```bash
+curl -s localhost:8000/api/chat -H 'Content-Type: application/json' \
+     -d '{"question":"How many PTO days do I get?"}'
+```
+
+```json
+{
+  "question": "How many PTO days do I get?",
+  "answer": "Full-time employees accrue 20 days of paid time off per year ...",
+  "route": "kb",
+  "source_used": "private_kb",
+  "kb_grade": "good",
+  "kb_chunks": 2,
+  "retry_count": 0,
+  "rewritten_query": null,
+  "sources": [{"source": "leave-and-time-off.md", "department": "general", ...}],
+  "web_urls": [],
+  "trace": ["Router: kb", "KB Retriever: 2 chunk(s) for '...'", "KB Grader: good",
+            "Generate/KB: answered from private_kb"],
+  "audit_id": 41
+}
+```
+
+**The admin key fails closed.** `ADMIN_API_KEY` defaults to empty, and an empty key means the admin
+routes refuse *every* request with 503 — before they look at the header, so an unset key can never
+be matched by an absent or empty one. A wrong key is 401. `/health` reports `admin_enabled`, so an
+accidentally-off admin surface is visible from outside rather than discovered when someone tries to
+upload. Keys are compared with `hmac.compare_digest`; a plain `==` on a secret leaks its length and
+prefix through timing.
+
+**No error response carries an exception's text.** A provider failure carries URLs, request ids and
+sometimes the offending payload, and this process holds API keys — `detail=str(exc)` is how one of
+them reaches a browser. Failures are logged with their traceback and answered with a fixed sentence,
+and a test posts a question to a copilot that raises `key=gsk_live_SECRET` to prove neither the key
+nor the host comes back.
+
+**Uploads are capped while streaming, not after.** `await file.read()` with no argument materialises
+the whole body first, which is a way to exhaust the process before any limit gets to apply.
+`MAX_UPLOAD_MB` (10 by default) is enforced a megabyte at a time and a refused upload leaves no
+partial file behind. The filename is treated as attacker-controlled text: both separators are
+stripped, not just the platform's, because a Windows client posting to a Linux container sends
+backslashes that `Path.name` there would keep.
+
+**Every answered question is written to SQLite**, with the route, both grades, the retry count, the
+citations, the full trace and the latency. That log is what makes "what did it tell someone about
+the notice period in March?" answerable — the graph is not deterministic, so re-running the question
+later is not the same as having the record. Writing it can never cost the employee their answer:
+`AuditStore.record` catches everything, returns `None`, and the response comes back with
+`audit_id: null` rather than a 500.
+
+```bash
+curl -s localhost:8000/api/audit/stats -H "X-Admin-Key: $ADMIN_API_KEY"
+```
+
+```json
+{"total": 128, "by_source": {"private_kb": 96, "web_search": 21, "direct": 8,
+ "insufficient_evidence": 3}, "grounded": 117, "grounded_rate": 0.914,
+ "rewritten": 14, "average_latency_ms": 2180}
+```
+
+`grounded_rate` is the number worth watching: the share of answers that rested on retrieved evidence
+rather than ending in an admission or an error. A fall in it is how a broken ingest, an exhausted
+token quota or a drifting similarity threshold shows up from outside.
 
 ---
 
@@ -420,7 +507,7 @@ python scripts/inspect_document.py    # load + chunk one file, offline, no keys
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
 
-pytest                                # 158 tests, no network, no credentials
+pytest                                # 195 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -490,12 +577,15 @@ app/agent/nodes.py        node bodies, as closures over injectable clients
 app/agent/graph.py        wiring and compilation
 app/agent/diagram.py      render the compiled graph
 app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
-app/api/                  FastAPI routers (only /health so far, in app/main.py)
+app/services/audit.py     AuditStore -- the SQLite record of every answered question
+app/api/deps.py           what a route depends on, read off app.state
+app/api/routes.py         the ops (/health) and api (/api/*) routers
+app/main.py               create_app -- builds the app, wires services onto app.state
 
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    158 tests over fakes -- no network, no credentials
+tests/                    195 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below
@@ -684,12 +774,14 @@ Two deliberate deviations from step.md, both already in the code:
   chunks from more than one file for a single question, and two documents disagreeing produces a
   confidently wrong answer that grading cannot catch, because each chunk looks fine alone.
 
-1. `/chat` over `Copilot.ask` — the facade and its response model already exist
-2. SQLite data layer: chat history, feedback, document metadata, execution traces
-3. `/upload` and `/ingest` for authorised HR staff — the multi-format loader is in place
-4. HTML/CSS/JS frontend: chat with citations and a visible execution trace
-5. Docker + DigitalOcean: FastAPI app, Nginx frontend, ingestion worker, SQLite volume
-6. Conversation memory, so follow-up questions resolve against the previous turn
+1. Feedback capture — a thumbs-up/down against an `audit_id`, and an admin view over it
+2. Document metadata in SQLite, so `/api/audit` can answer "which policy version said that?"
+3. HTML/CSS/JS frontend: chat with citations and a visible execution trace
+4. Docker + DigitalOcean: FastAPI app, Nginx frontend, ingestion worker, SQLite volume
+5. Conversation memory, so follow-up questions resolve against the previous turn
+
+Done since: `/api/chat` over `Copilot.ask`, `/api/upload` for authorised HR staff, and the SQLite
+audit layer behind `/api/audit`.
 
 ## Tech stack
 

@@ -261,6 +261,12 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")
 
+    # A cap on one upload, enforced while the body streams to disk rather than
+    # after it is read into memory. The uploaded file is the only input this API
+    # takes from a caller by the megabyte, so it is the only one that can
+    # exhaust the process or fill the mounted volume.
+    max_upload_mb: int = Field(default=10, ge=1, validation_alias="MAX_UPLOAD_MB")
+
     # --- Paths ---------------------------------------------------------------
     # Settings rather than fixed properties so a container can mount them: the
     # target architecture runs the app and its SQLite volume as separate Docker
@@ -373,6 +379,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.strip().lower() in ("production", "prod")
+
+    @property
+    def max_upload_bytes(self) -> int:
+        """The upload cap in bytes, which is what a streaming read counts."""
+        return self.max_upload_mb * 1024 * 1024
 
     @property
     def admin_enabled(self) -> bool:

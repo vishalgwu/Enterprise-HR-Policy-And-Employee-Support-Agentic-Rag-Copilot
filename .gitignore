@@ -29,3 +29,10 @@ dist/
 # Employee-uploaded documents -- runtime data, not source
 uploads/*
 !uploads/.gitkeep
+
+# The audit log -- every employee question and the answer they were given.
+# Runtime data, and HR-sensitive; never source.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
