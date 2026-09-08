@@ -1,0 +1,5 @@
+# Keep binaries byte-exact -- core.autocrlf would otherwise rewrite line endings
+*.pdf binary
+*.png binary
+*.jpg binary
+*.ico binary

@@ -25,3 +25,7 @@ dist/
 
 # Local logs and scratch output
 *.log
+
+# Employee-uploaded documents -- runtime data, not source
+uploads/*
+!uploads/.gitkeep

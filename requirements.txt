@@ -1,0 +1,3 @@
+# The pinned dependency list lives in req.txt (see CLAUDE.md).
+# This file exists so the conventional command still works.
+-r req.txt
