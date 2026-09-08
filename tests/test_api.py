@@ -35,6 +35,32 @@ def test_health_never_echoes_a_secret_value():
     assert "super-secret-value" not in text
 
 
+def test_health_reports_the_app_identity_and_admin_state():
+    body = client(APP_NAME="HR Copilot", APP_ENV="staging").get("/health").json()
+    assert body["app"] == "HR Copilot"
+    assert body["env"] == "staging"
+    assert body["admin_enabled"] is False
+
+
+def test_admin_enabled_follows_the_key():
+    assert client(ADMIN_API_KEY="k").get("/health").json()["admin_enabled"] is True
+
+
+def test_interactive_docs_are_served_outside_production():
+    c = client(APP_ENV="development")
+    assert c.get("/docs").status_code == 200
+    assert c.get("/openapi.json").status_code == 200
+
+
+def test_interactive_docs_are_withheld_in_production():
+    """They enumerate every route, admin ones included."""
+    c = client(APP_ENV="production")
+    assert c.get("/docs").status_code == 404
+    assert c.get("/openapi.json").status_code == 404
+    # /health still works -- the load balancer depends on it.
+    assert c.get("/health").status_code == 200
+
+
 def test_health_is_reachable_without_any_credentials():
     """A container must come up and report the problem, not fail to start."""
     response = client(GROQ_API="", TAVILY_API="", PINECONE_API="").get("/health")

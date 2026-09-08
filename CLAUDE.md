@@ -21,7 +21,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 112 tests, offline, no credentials needed
+pytest                                 # 122 tests, offline, no credentials needed
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
 python scripts/ingest_public_web.py    # scraped article     -> "public-web"
 python scripts/demo.py                 # four demos, one per graph path
@@ -121,6 +121,26 @@ rendered into the error text that then reaches logs and tracebacks. Observed exa
 dimension-mismatch check: the message began ``input_value={'GROQ_API': 'gsk_...``. Field-level
 errors are safe (they echo only that field), but anything cross-field belongs in an ordinary method
 like `validate_embedding()`, called from `validate_required()`.
+
+**The admin key defaults to empty, and that is the design.** `ADMIN_API_KEY` gates the admin-only
+endpoints. A reference implementation used `"change-me-in-production"` as the default; that is worse
+than nothing, because forgetting to set it leaves the admin API open behind a string published in
+the source. Empty means `admin_enabled` is False and those routes must **refuse every request** —
+fail closed, so the failure mode is "admin is off", never "anyone is admin". `validate_required()`
+additionally refuses to start without one when `APP_ENV=production`, and `/health` reports
+`admin_enabled` so a silently-off admin surface is visible from outside.
+
+Compare with `check_admin_key()`, never `==`: a plain comparison on a secret leaks its length and
+prefix through timing. It also returns False when no key is configured, so an unset key cannot be
+matched by an empty header.
+
+**`APP_ENV` is load-bearing, not a label.** `production` withholds `/docs`, `/redoc` and
+`/openapi.json` — they enumerate every route, admin ones included — and makes the admin key
+mandatory. `/health` stays open at every env, because the load balancer depends on it.
+
+**`kb_dir`, `upload_dir` and `audit_db_path` are settings, not fixed properties.** The target
+architecture runs the app and its SQLite volume as separate Docker services, which only works if
+those paths can be pointed elsewhere at deploy time.
 
 ## Providers
 

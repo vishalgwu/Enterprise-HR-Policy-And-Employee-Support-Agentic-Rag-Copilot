@@ -331,3 +331,64 @@ def test_settings_are_immutable():
 
 def test_get_settings_is_cached():
     assert get_settings() is get_settings()
+
+
+# --- Admin key ---------------------------------------------------------------
+
+
+def test_admin_is_disabled_when_no_key_is_configured():
+    """No working placeholder default: unset must mean off, not open."""
+    s = Settings(_env_file=None)
+    assert not s.admin_enabled
+    assert not s.check_admin_key("")
+    assert not s.check_admin_key(None)
+    assert not s.check_admin_key("change-me-in-production")
+
+
+def test_admin_key_matches_only_the_configured_value():
+    s = Settings(_env_file=None, ADMIN_API_KEY="s3cret")
+    assert s.admin_enabled
+    assert s.check_admin_key("s3cret")
+    assert s.check_admin_key("  s3cret  ")  # header whitespace
+    assert not s.check_admin_key("s3cre")
+    assert not s.check_admin_key("wrong")
+
+
+def test_production_refuses_to_start_without_an_admin_key():
+    base = dict(
+        _env_file=None, PINECONE_API="p", TAVILY_API="t", GROQ_API="g",
+        EMBEDDING_DIM=384,
+    )
+    with pytest.raises(ValueError, match="ADMIN_API_KEY"):
+        Settings(**base, APP_ENV="production").validate_required()
+    # Development is allowed to run without one; the routes fail closed anyway.
+    Settings(**base, APP_ENV="development").validate_required()
+    Settings(**base, APP_ENV="production", ADMIN_API_KEY="k").validate_required()
+
+
+def test_is_production_accepts_the_usual_spellings():
+    assert Settings(_env_file=None, APP_ENV="production").is_production
+    assert Settings(_env_file=None, APP_ENV="Prod").is_production
+    assert not Settings(_env_file=None, APP_ENV="development").is_production
+
+
+# --- Paths -------------------------------------------------------------------
+
+
+def test_paths_are_configurable_for_a_container(tmp_path):
+    """Docker mounts the KB, uploads and the SQLite volume at its own paths."""
+    s = Settings(
+        _env_file=None,
+        KB_DIR=str(tmp_path / "kb"),
+        UPLOAD_DIR=str(tmp_path / "up"),
+        AUDIT_DB_PATH=str(tmp_path / "audit.db"),
+    )
+    assert s.kb_dir == tmp_path / "kb"
+    assert s.upload_dir == tmp_path / "up"
+    assert s.audit_db_path == tmp_path / "audit.db"
+
+
+def test_paths_default_under_the_project_root():
+    s = Settings(_env_file=None)
+    assert s.kb_dir == s.project_root / "data" / "private_kb"
+    assert s.audit_db_path == s.project_root / "data" / "audit.db"

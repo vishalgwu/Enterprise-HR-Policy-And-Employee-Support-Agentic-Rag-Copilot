@@ -22,6 +22,7 @@ Two things about the import-time behaviour are load-bearing:
 
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 import sys
@@ -56,6 +57,8 @@ SECRET_ALIASES: Dict[str, str] = {
     "tavily_api_key": "TAVILY_API",
     "pinecone_api_key": "PINECONE_API",
     "openai_api_key": "OPENAI_API_KEY",
+    "admin_api_key": "ADMIN_API_KEY",
+    "langsmith_api_key": "LANGSMITH_API_KEY",
 }
 
 KNOWN_EMBEDDING_DIMS: Dict[str, int] = {
@@ -85,6 +88,15 @@ class Settings(BaseSettings):
         frozen=True,
     )
 
+    # --- Application identity ------------------------------------------------
+    app_name: str = Field(
+        default="Enterprise HR Policy Agentic RAG Copilot", validation_alias="APP_NAME"
+    )
+    # "development" | "production". Load-bearing rather than decorative: it
+    # decides whether the interactive API docs are exposed, and it is what
+    # `validate_required` checks the admin key against.
+    app_env: str = Field(default="development", validation_alias="APP_ENV")
+
     # --- Secrets -------------------------------------------------------------
     # Empty rather than required: see the module docstring. Use `require()`.
     #
@@ -101,6 +113,19 @@ class Settings(BaseSettings):
     )
     openai_api_key: SecretStr = Field(
         default=SecretStr(""), validation_alias="OPENAI_API_KEY"
+    )
+
+    # Gates the admin-only endpoints (/upload, /ingest, /admin, /logs).
+    #
+    # Empty by default, deliberately. A working placeholder like
+    # "change-me-in-production" is worse than none: forget to set it and the
+    # admin API is open, guarded by a string that is in the source. Empty means
+    # `admin_enabled` is False and those routes must refuse every request --
+    # fail closed, so the failure is "admin is off" rather than "anyone is
+    # admin". `validate_required` additionally refuses to start without one when
+    # APP_ENV=production.
+    admin_api_key: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ADMIN_API_KEY"
     )
 
     # --- Providers -----------------------------------------------------------
@@ -193,6 +218,20 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")
 
+    # --- Paths ---------------------------------------------------------------
+    # Settings rather than fixed properties so a container can mount them: the
+    # target architecture runs the app and its SQLite volume as separate Docker
+    # services, which only works if the paths are configurable.
+    kb_dir: Path = Field(
+        default=PROJECT_ROOT / "data" / "private_kb", validation_alias="KB_DIR"
+    )
+    upload_dir: Path = Field(
+        default=PROJECT_ROOT / "uploads", validation_alias="UPLOAD_DIR"
+    )
+    audit_db_path: Path = Field(
+        default=PROJECT_ROOT / "data" / "audit.db", validation_alias="AUDIT_DB_PATH"
+    )
+
     # --- Observability -------------------------------------------------------
     # LangSmith tracing is declared here rather than left to the environment,
     # because it has to be a decision rather than an accident. Tracing uploads
@@ -284,20 +323,30 @@ class Settings(BaseSettings):
         """The chat model the configured provider will actually use."""
         return self.openai_model if self.llm_provider == "openai" else self.groq_model
 
-    # --- Paths ---------------------------------------------------------------
     @property
     def project_root(self) -> Path:
         return PROJECT_ROOT
 
     @property
-    def kb_dir(self) -> Path:
-        """Private HR documents. Subdirectories are read as department names."""
-        return PROJECT_ROOT / "data" / "private_kb"
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() in ("production", "prod")
 
     @property
-    def upload_dir(self) -> Path:
-        """Where authorised HR staff drop documents for ingestion."""
-        return PROJECT_ROOT / "uploads"
+    def admin_enabled(self) -> bool:
+        """False when no admin key is configured; admin routes must refuse."""
+        return bool(self._secret("admin_api_key"))
+
+    def check_admin_key(self, presented: str | None) -> bool:
+        """Constant-time comparison of a presented admin key.
+
+        Returns False when admin is not configured at all, so an unset key can
+        never be matched by an empty header. `compare_digest` because a plain
+        `==` on a secret leaks its length and prefix through timing.
+        """
+        expected = self._secret("admin_api_key")
+        if not expected or not presented:
+            return False
+        return hmac.compare_digest(expected, presented.strip())
 
     # --- Secret access -------------------------------------------------------
     def require(self, field: str) -> str:
@@ -357,6 +406,13 @@ class Settings(BaseSettings):
                 f"Add them to {PROJECT_ROOT / '.env'} (see .env.example)."
             )
         self.validate_embedding()
+        if self.is_production and not self.admin_enabled:
+            # Only in production: development wants to run without one, and
+            # admin routes already fail closed when it is unset.
+            raise ValueError(
+                "ADMIN_API_KEY must be set when APP_ENV=production -- the admin "
+                "endpoints are refused entirely without it."
+            )
 
     def export_client_env(self) -> None:
         """Publish settings under the names third-party clients look for.

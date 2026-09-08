@@ -24,7 +24,7 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 112 tests, no network, no credentials | Implemented |
+| Test suite — 122 tests, no network, no credentials | Implemented |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
 | FastAPI service | `/health` only; `/chat`, `/upload`, `/ingest`, `/feedback`, `/admin`, `/logs` not yet built |
@@ -392,7 +392,7 @@ python scripts/demo.py 2              # just demo 2
 python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
-pytest                                # 112 tests, no network, no credentials
+pytest                                # 122 tests, no network, no credentials
 ```
 
 Ask a single question:
@@ -461,7 +461,7 @@ app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
 app/api/                  FastAPI routers (only /health so far, in app/main.py)
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    112 tests over fakes -- no network, no credentials
+tests/                    122 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
 step.md                   the 16-step build plan this project is working through

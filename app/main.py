@@ -20,21 +20,24 @@ from fastapi import FastAPI
 from app import __version__
 from app.core.config import Settings, configure_logging, get_settings
 
-TITLE = "Enterprise HR Policy & Employee Support Agentic RAG Copilot"
-
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging()
 
     api = FastAPI(
-        title=TITLE,
+        title=settings.app_name,
         version=__version__,
         description=(
             "Answers employee HR questions from an approved private knowledge "
             "base, grades the evidence before answering, and falls back to web "
             "search only when internal policy does not cover the question."
         ),
+        # The interactive docs enumerate every route, including the admin ones,
+        # and are not something an employee-facing deployment needs to publish.
+        docs_url=None if settings.is_production else "/docs",
+        redoc_url=None if settings.is_production else "/redoc",
+        openapi_url=None if settings.is_production else "/openapi.json",
     )
 
     @api.get("/health", tags=["ops"])
@@ -47,7 +50,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         missing = settings.missing_secrets()
         return {
             "status": "ok" if not missing else "degraded",
+            "app": settings.app_name,
+            "env": settings.app_env,
             "version": __version__,
+            # Whether the admin routes will accept anything at all. They fail
+            # closed without a key, and silent-off is exactly the state worth
+            # being able to see from outside.
+            "admin_enabled": settings.admin_enabled,
             "missing_secrets": missing,
             "pinecone_index": settings.pinecone_index,
             "private_namespace": settings.private_namespace,
