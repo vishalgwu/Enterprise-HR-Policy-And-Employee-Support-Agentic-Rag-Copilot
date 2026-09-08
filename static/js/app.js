@@ -112,11 +112,16 @@
 
   /* ── Safe text rendering ───────────────────────────────────────────────── */
 
-  const INLINE = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  // Bold before italic: alternation is left-to-right, so `**x**` must get the
+  // chance to match before `*x*` claims the first asterisk pair. Italic is here
+  // because the model routinely cites its source as *leave-and-time-off.md*,
+  // and unhandled asterisks show up verbatim in the answer.
+  const INLINE = /\*\*([^*]+)\*\*|\*([^*\n]+)\*|`([^`]+)`/g;
+  const INLINE_TAG = ["strong", "em", "code"];
 
-  /** Append `text` to `parent`, turning **bold** and `code` into elements.
-   *  Everything else becomes a text node, so no markup in the source string is
-   *  ever interpreted. */
+  /** Append `text` to `parent`, turning **bold**, *italic* and `code` into
+   *  elements. Everything else becomes a text node, so no markup in the source
+   *  string is ever interpreted. */
   function appendInline(parent, text) {
     let last = 0;
     let match;
@@ -125,8 +130,9 @@
       if (match.index > last) {
         parent.appendChild(document.createTextNode(text.slice(last, match.index)));
       }
-      const el = document.createElement(match[1] ? "strong" : "code");
-      el.textContent = match[1] || match[2];
+      const group = [1, 2, 3].find((n) => match[n] !== undefined);
+      const el = document.createElement(INLINE_TAG[group - 1]);
+      el.textContent = match[group];
       parent.appendChild(el);
       last = INLINE.lastIndex;
     }

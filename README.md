@@ -25,7 +25,7 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 200 tests, no network, no credentials | Implemented |
+| Test suite — 210 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
@@ -552,14 +552,34 @@ python scripts/demo.py 2              # just demo 2
 python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
 python scripts/inspect_document.py    # load + chunk one file, offline, no keys
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
-python run.py                         # start the API on :8000
+python run.py                         # start the API and the console on :8000
+python run.py --reload                # development
+python run.py --port 8080             # override API_PORT for one run
 
-pytest                                # 200 tests, no network, no credentials
+pytest                                # 210 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
-Every script supports `--help`, and none of them touches a provider to print it — argument parsing
-happens before `validate_required()`, so `--help` works in a fresh checkout with no `.env`.
+Every entry point supports `--help`, `run.py` included, and none of them touches a provider to
+print it — argument parsing happens before `validate_required()`, so `--help` works in a fresh
+checkout with no `.env`.
+
+`run.py` prints what the process actually resolved to before it serves anything:
+
+```
+Enterprise HR Policy Agentic RAG Copilot - development
+  llm         groq / openai/gpt-oss-20b
+  embeddings  huggingface / sentence-transformers/all-MiniLM-L6-v2 (384d)
+  pinecone    hr-policy-copilot / hr-docs
+  admin api   OFF (no ADMIN_API_KEY)
+  langsmith   on, redacted -> project 'Hr-agentic-ai' (run tree, timings and decisions;
+              no question or policy text)
+  console     http://localhost:8000/
+```
+
+Names only, never a secret value — it goes to stdout and into whatever the deployment captures.
+Unredacted tracing is shouted about rather than mentioned, because questions and retrieved policy
+text leaving the deployment is not something to discover later in a config file.
 
 Ask a single question:
 
@@ -636,7 +656,7 @@ static/js/app.js          the console's behaviour -- no framework, no build step
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    200 tests over fakes -- no network, no credentials
+tests/                    210 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below

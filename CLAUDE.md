@@ -23,7 +23,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 200 tests, offline, no credentials needed
+pytest                                 # 210 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -40,10 +40,21 @@ findings.** Keep it that way; it is a real gate now, not an aspiration. Pinned d
 minor release adds rules, and a lint gate that starts failing on an unchanged tree is one people
 learn to ignore.
 
-**Every script parses arguments before it validates credentials, and that ordering is the point.**
-`scripts/demo.py` used to read `sys.argv` by hand, so `--help` matched nothing, was ignored, and
-fired four live Groq/Pinecone/Tavily round trips at someone asking what the flags were. Every
-script uses `argparse` now, and `--help` works in a checkout with no `.env`.
+**Every entry point parses arguments before it validates credentials, and that ordering is the
+point.** `scripts/demo.py` used to read `sys.argv` by hand, so `--help` matched nothing, was
+ignored, and fired four live Groq/Pinecone/Tavily round trips at someone asking what the flags
+were. `run.py` had the identical bug for longer — `reload="--reload" in sys.argv`, so `python run.py
+--help` *started a server* — while this file and the README both claimed every script supported
+`--help`. Everything uses `argparse` now, `--help` works in a checkout with no `.env`, and
+`tests/test_run.py` pins it so the claim and the code cannot drift apart again.
+
+**`run.py` prints what the process resolved to before the first request.** `describe(settings)`
+reports the providers, the index and namespace, whether the admin surface is on, and — the reason it
+exists — whether LangSmith is uploading, to which project, and whether payloads are redacted.
+Everything there is also on `/health`; this is the same information at the moment someone is
+actually looking. It prints **names only, never a secret value**, because it goes to stdout and into
+whatever the deployment captures; `test_the_banner_never_prints_a_secret_value` pins that, and
+unredacted tracing is deliberately shouted about rather than mentioned.
 
 ## Module layering
 

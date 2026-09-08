@@ -488,6 +488,7 @@ body[data-admin="off"] [data-admin-only] { display: none; }
 .msg__body p { margin: 0 0 10px; }
 .msg__body p:last-child { margin-bottom: 0; }
 .msg__body strong { font-weight: 650; color: var(--text); }
+.msg__body em { font-style: normal; color: var(--accent-2); }
 .msg__body li { position: relative; margin: 0 0 6px 18px; }
 .msg__body li::before {
   content: "";
