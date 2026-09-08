@@ -52,6 +52,10 @@ class AnswerResult(BaseModel):
     kb_chunks: int = 0
     sources: list[SourceRef] = Field(default_factory=list)
     web_urls: list[str] = Field(default_factory=list)
+    trace: list[str] = Field(
+        default_factory=list,
+        description="One entry per node, in the order the graph ran them.",
+    )
 
     @property
     def grounded(self) -> bool:
@@ -64,6 +68,12 @@ def to_answer(state: AgentState | dict[str, Any]) -> AnswerResult:
     kb_docs = state.get("kb_docs") or []
     question = state.get("question", "")
     current_query = state.get("current_query")
+    # `retrieve_kb` writes citations beside the chunks. Recomputing from
+    # kb_docs is the fallback for a state that never went through that node --
+    # a partial state in a test, or one built before citations were threaded.
+    citations = state.get("citations")
+    if citations is None:
+        citations = cite_sources(kb_docs)
     return AnswerResult(
         question=question,
         answer=(state.get("answer") or "").strip(),
@@ -74,8 +84,9 @@ def to_answer(state: AgentState | dict[str, Any]) -> AnswerResult:
         kb_grade=state.get("kb_grade"),
         web_grade=state.get("web_grade"),
         kb_chunks=len(kb_docs),
-        sources=[SourceRef(**ref) for ref in cite_sources(kb_docs)],
+        sources=[SourceRef(**ref) for ref in citations],
         web_urls=state.get("web_urls") or [],
+        trace=list(state.get("trace") or []),
     )
 
 
@@ -137,7 +148,9 @@ RULE = "=" * 86
 THIN = "-" * 86
 
 
-def render_answer(result: AnswerResult, show_sources: bool = True) -> str:
+def render_answer(
+    result: AnswerResult, show_sources: bool = True, show_trace: bool = True
+) -> str:
     """Format an answer and its provenance for a terminal."""
     lines = [
         RULE,
@@ -155,5 +168,9 @@ def render_answer(result: AnswerResult, show_sources: bool = True) -> str:
     ]
     if show_sources and result.sources:
         lines.append(f"KB SOURCES    {', '.join(s.source for s in result.sources)}")
+    if show_trace and result.trace:
+        lines.append(THIN)
+        lines.append("TRACE")
+        lines += [f"  {n}. {step}" for n, step in enumerate(result.trace, 1)]
     lines += [THIN, "ANSWER", result.answer, RULE]
     return "\n".join(lines)

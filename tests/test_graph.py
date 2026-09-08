@@ -100,6 +100,74 @@ def test_the_original_question_survives_a_rewrite():
     assert state["current_query"] == "formal phrasing"
 
 
+# --- The trace and the citations ---------------------------------------------
+
+
+def test_the_trace_records_the_nodes_that_ran_in_order():
+    state = run(FakeLLM(route="direct"), FakeRetriever([]), FakeWebSearch(),
+                question="hi there")
+    assert state["trace"] == [
+        "Router: direct",
+        "Generate/Direct: answered from direct",
+    ]
+
+
+def test_the_trace_accumulates_instead_of_being_overwritten():
+    """The `add` reducer on `trace` is what makes this pass.
+
+    Without it each node's return *replaces* the key and only the last node's
+    entry survives -- so the rewrite loop, the one run whose path is actually
+    worth seeing, would erase its own history.
+    """
+    state = run(
+        FakeLLM(route="kb", grades=["weak"], rewrite="annual PTO allowance"),
+        FakeRetriever([]),
+        FakeWebSearch(),
+    )
+    trace = state["trace"]
+
+    assert trace[0] == "Router: kb"
+    assert trace[-1] == "Fallback: no sufficient evidence in KB or web"
+    # Retrieval ran twice: once on the original wording, once on the rewrite.
+    assert sum(step.startswith("KB Retriever:") for step in trace) == 2
+    assert "Rewriter: annual PTO allowance" in trace
+
+
+def test_a_degraded_call_is_recorded_in_the_trace():
+    """An outage and a genuine absence of evidence produce the same answer;
+    only the trace distinguishes them."""
+    web = FakeWebSearch(answer="Public guidance.", results=[{"url": "https://x"}])
+    state = run(FakeLLM(route="kb", grades=["good"]), FakeRetriever(fail=True), web)
+
+    assert state["source_used"] == "web_search"
+    assert any(
+        step.startswith("KB Retriever: failed (RuntimeError)")
+        for step in state["trace"]
+    )
+
+
+def test_citations_are_written_beside_the_chunks_they_describe():
+    state = run(FakeLLM(route="kb", grades=["good"]), FakeRetriever([kb_doc()]),
+                FakeWebSearch())
+    assert [c["source"] for c in state["citations"]] == ["leave-and-time-off.md"]
+
+
+def test_citations_are_replaced_by_a_rewrite_not_accumulated():
+    """The retry retrieved nothing, so nothing may still be cited.
+
+    A reducer here would leave the first attempt's sources attached to an
+    answer that no longer rests on them.
+    """
+    state = run(
+        FakeLLM(route="kb", grades=["weak"], rewrite="annual PTO allowance"),
+        FakeRetriever([[kb_doc()], []]),
+        FakeWebSearch(),
+    )
+    assert state["source_used"] == "insufficient_evidence"
+    assert state["kb_docs"] == []
+    assert state["citations"] == []
+
+
 # --- Degradation -------------------------------------------------------------
 
 

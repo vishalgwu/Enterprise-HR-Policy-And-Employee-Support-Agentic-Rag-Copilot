@@ -22,9 +22,10 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Tavily web-search client | Implemented, live call verified |
 | Structured routing + evidence grading | Implemented, 21/21 on a labelled set |
 | LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
+| Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 144 tests, no network, no credentials | Implemented |
+| Test suite — 158 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
@@ -76,6 +77,30 @@ code.
 mismatch between how an employee phrases a question and how policy is written, so the rewritten
 query deserves another look at internal policy before falling back to public sources. `retry_count`
 bounds the loop at `MAX_RETRIES = 1`.
+
+**Every node records what it did.** `AgentState.trace` collects one entry per node, in the order the
+graph ran them, and comes back on `AnswerResult.trace` — the execution trace the brief asks the UI
+to show, available before the UI exists. It is a reducer key (`Annotated[list[str], add]`) rather
+than a plain list because a plain `TypedDict` key is *replaced* by each node's return, which would
+leave only the final step and erase the rewrite loop's history. Degraded calls are recorded too: a
+Pinecone outage and a genuine absence of policy produce the same answer, and only the trace tells
+them apart.
+
+```
+TRACE
+  1. Router: kb
+  2. KB Retriever: 1 chunk(s) for 'How many PTO days do I get?'
+  3. KB Grader: weak
+  4. Tavily: searching 'How many PTO days do I get?'
+  5. Tavily: 101 characters
+  6. Web Grader: good
+  7. Generate/Web: answered from web_search
+```
+
+`citations` sits beside it and behaves the opposite way. `retrieve_kb` writes it in the same update
+as `kb_docs`, from the same chunks, and it is *replaced* rather than accumulated — a rewrite loops
+back through retrieval, and carrying the first attempt's sources forward would cite documents the
+answer no longer rests on.
 
 Verified live, all four terminal paths plus the loop:
 
@@ -395,7 +420,7 @@ python scripts/inspect_document.py    # load + chunk one file, offline, no keys
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
 
-pytest                                # 144 tests, no network, no credentials
+pytest                                # 158 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -470,7 +495,7 @@ app/api/                  FastAPI routers (only /health so far, in app/main.py)
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    144 tests over fakes -- no network, no credentials
+tests/                    158 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below

@@ -15,7 +15,8 @@ works too.
 
 from __future__ import annotations
 
-from typing import Literal, NotRequired
+from operator import add
+from typing import Annotated, Literal, NotRequired
 
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
@@ -65,15 +66,32 @@ class AgentState(TypedDict):
     final answer, the citations and the logs. Collapsing them loses what was
     actually asked.
 
-    Keys are NotRequired because nodes return partial updates -- a fresh state
-    only needs what `initial_state` seeds.
+    Most keys are NotRequired because nodes return partial updates -- a fresh
+    state only needs what `initial_state` seeds.
+
+    **`trace` is the one key that accumulates rather than overwrites.** A plain
+    TypedDict key is *replaced* by whatever a node returns, so a bare
+    `list[str]` would leave only the last node's entries and the rewrite loop
+    would erase its own history -- exactly the run whose path is worth seeing.
+    The `add` reducer in the `Annotated` metadata is what makes each node's
+    return append instead, so nodes return only their own new steps. It is a
+    required key, seeded empty by `initial_state`, because a reducer has nothing
+    to fold into on a key that may be absent.
+
+    **`citations` deliberately does not accumulate.** It is derived from
+    `kb_docs`, and a rewrite loops back through `retrieve_kb` and *replaces*
+    those chunks; accumulating would cite documents that lost their evidence on
+    the retry. Overwriting alongside `kb_docs` keeps the two describing the same
+    retrieval.
     """
 
     question: str
     current_query: str
     retry_count: int
+    trace: Annotated[list[str], add]
     route: NotRequired[Route]
     kb_docs: NotRequired[list[Document]]
+    citations: NotRequired[list[dict[str, str]]]
     web_results: NotRequired[str]
     web_urls: NotRequired[list[str]]
     kb_grade: NotRequired[Grade]
@@ -83,5 +101,8 @@ class AgentState(TypedDict):
 
 
 def initial_state(question: str) -> AgentState:
-    """Seed a state so callers cannot forget current_query or retry_count."""
-    return AgentState(question=question, current_query=question, retry_count=0)
+    """Seed a state so callers cannot forget current_query, retry_count or the
+    trace the reducer folds into."""
+    return AgentState(
+        question=question, current_query=question, retry_count=0, trace=[]
+    )

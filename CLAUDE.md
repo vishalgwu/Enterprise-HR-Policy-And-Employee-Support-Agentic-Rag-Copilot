@@ -21,7 +21,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 144 tests, offline, no credentials needed
+pytest                                 # 158 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -390,6 +390,20 @@ search, and answered from an unrelated web page. Re-test both classes after any 
 **`question` and `current_query` are deliberately separate in `AgentState`.** A rewrite replaces
 `current_query`; `question` keeps the employee's original wording for the final answer, citations
 and logs. Collapsing them loses what was actually asked.
+
+**`trace` accumulates through a reducer; `citations` deliberately does not.** `trace` is
+`Annotated[list[str], add]`, and the reducer is load-bearing: a plain TypedDict key is *replaced* by
+whatever a node returns, so a bare `list[str]` would leave only the last node's entry and the
+rewrite loop — the one run whose path is worth seeing — would erase its own history. It is a
+required key seeded empty by `initial_state`, because a reducer has nothing to fold into on a key
+that may be absent. `note()` in `build_nodes` logs a step *and* returns it, so the console line and
+the state entry cannot drift apart, and `guard()` appends there too when a call degrades: an outage
+and a genuine absence of evidence produce the same answer, and only the trace distinguishes them.
+`citations` takes no reducer on purpose — it is derived from `kb_docs`, and a rewrite loops back
+through `retrieve_kb` and *replaces* those chunks, so accumulating would cite documents the answer
+no longer rests on. `test_the_trace_accumulates_instead_of_being_overwritten` and
+`test_citations_are_replaced_by_a_rewrite_not_accumulated` pin the two halves; deleting the reducer
+fails three tests rather than none.
 
 **`temperature=0` is not determinism on Groq.** Repeated grading of a genuinely borderline case
 ("the KB covers employees, the question asks about contractors") returned `weak` 8/8 in isolation

@@ -13,6 +13,13 @@ evidence, a rewrite failure keeps the original query while still incrementing
 `retry_count` so a broken LLM cannot spin the loop, and a generation failure
 returns GENERATION_FAILED with `source_used="error"` rather than an empty
 answer.
+
+Every node also returns its own steps in `trace`, which the `add` reducer on
+`AgentState` appends rather than overwrites. `note()` both logs a step and
+returns it, so the console line and the state entry cannot drift apart, and
+`guard()` records a degraded call there too -- a run that answered from the web
+because Pinecone was down looks identical to one that answered from the web
+because the evidence was weak, unless the trace says which it was.
 """
 
 from __future__ import annotations
@@ -41,7 +48,7 @@ from app.rag.clients import (
     web_result_urls,
     web_results_to_text,
 )
-from app.rag.loaders import format_documents
+from app.rag.loaders import cite_sources, format_documents
 from app.rag.retrieval import get_kb_retriever
 
 _log = get_logger("graph")
@@ -95,12 +102,28 @@ def build_nodes(
     grader = get_evidence_grader(llm)
     max_retries = settings.max_retries
 
-    def log(tag: str, message: Any) -> None:
+    def note(tag: str, message: Any) -> list[str]:
+        """Log one step and return it for the node to put in `trace`.
+
+        `verbose` silences the console line only. The trace is state the API
+        returns and the UI renders, so it is recorded either way.
+        """
         if verbose:
             _log.info("[%s] %s", tag, message)
+        return [f"{tag}: {message}"]
 
-    def guard(tag: str, action: Callable[[], Any], fallback: Any) -> Any:
-        """Run a network call; on failure log it and degrade to `fallback`."""
+    def guard(
+        tag: str,
+        action: Callable[[], Any],
+        fallback: Any,
+        steps: list[str] | None = None,
+    ) -> Any:
+        """Run a network call; on failure log it and degrade to `fallback`.
+
+        Pass `steps` to have the degradation recorded in the trace as well: a
+        caller reading the answer cannot otherwise tell an outage from a real
+        absence of evidence.
+        """
         try:
             return action()
         except Exception as exc:  # noqa: BLE001 - a node must never abort the graph
@@ -111,6 +134,7 @@ def build_nodes(
                     tag,
                     str(exc)[:160],
                 )
+                detail = "rate limited by the provider; results are degraded"
             else:
                 _log.warning(
                     "[%s] failed (%s: %s); continuing with fallback",
@@ -118,6 +142,9 @@ def build_nodes(
                     type(exc).__name__,
                     str(exc)[:200],
                 )
+                detail = f"failed ({type(exc).__name__}); continuing with fallback"
+            if steps is not None:
+                steps.append(f"{tag}: {detail}")
             return fallback
 
     # --- 1. Route ------------------------------------------------------------
@@ -126,8 +153,11 @@ def build_nodes(
         # classify_route survives a Groq tool_use_failed 400, which the router
         # hits often enough to matter: it is on the path of every question.
         route = classify_route(question, router)
-        log("Router", route)
-        return {"route": route, "current_query": question}
+        return {
+            "route": route,
+            "current_query": question,
+            "trace": note("Router", route),
+        }
 
     def route_after_router(state: AgentState) -> Literal["retrieve_kb", "direct_answer"]:
         return "retrieve_kb" if state.get("route") == "kb" else "direct_answer"
@@ -137,9 +167,12 @@ def build_nodes(
         query = state["current_query"]
         # A Pinecone outage degrades to "no evidence", which routes to the web
         # fallback -- the same path a genuinely empty retrieval takes.
-        docs = guard("KB Retriever", lambda: retriever.invoke(query), [])
-        log("KB Retriever", f"{len(docs)} chunk(s) for {query!r}")
-        return {"kb_docs": docs}
+        steps: list[str] = []
+        docs = guard("KB Retriever", lambda: retriever.invoke(query), [], steps)
+        steps += note("KB Retriever", f"{len(docs)} chunk(s) for {query!r}")
+        # Citations are written beside the chunks they describe, so a rewrite
+        # that replaces `kb_docs` replaces them in the same update.
+        return {"kb_docs": docs, "citations": cite_sources(docs), "trace": steps}
 
     # --- 3. Grade private KB evidence ----------------------------------------
     def grade_kb_evidence(state: AgentState) -> dict[str, Any]:
@@ -148,12 +181,13 @@ def build_nodes(
         # questions; grading an empty context would just spend a call to be told
         # "weak".
         if not docs:
-            log("KB Grader", "weak (no chunks passed the similarity gate)")
-            return {"kb_grade": "weak"}
+            return {
+                "kb_grade": "weak",
+                "trace": note("KB Grader", "weak (nothing passed the similarity gate)"),
+            }
 
         grade = grade_evidence(state["question"], format_documents(docs), grader)
-        log("KB Grader", grade)
-        return {"kb_grade": grade}
+        return {"kb_grade": grade, "trace": note("KB Grader", grade)}
 
     def decide_after_kb_grade(
         state: AgentState,
@@ -163,25 +197,30 @@ def build_nodes(
     # --- 4. Tavily web search fallback ---------------------------------------
     def search_web(state: AgentState) -> dict[str, Any]:
         query = state["current_query"]
-        log("Tavily", f"searching {query!r}")
+        steps = note("Tavily", f"searching {query!r}")
         # This node is itself the fallback, so it needs one of its own: a Tavily
         # outage must degrade to empty evidence and let the graph rewrite or
         # admit defeat, not abort the run.
-        raw = guard("Tavily", lambda: web_search.invoke({"query": query}), None)
+        raw = guard("Tavily", lambda: web_search.invoke({"query": query}), None, steps)
         web_text = web_results_to_text(raw)
-        log("Tavily", f"{len(web_text)} characters")
-        return {"web_results": web_text, "web_urls": web_result_urls(raw)}
+        steps += note("Tavily", f"{len(web_text)} characters")
+        return {
+            "web_results": web_text,
+            "web_urls": web_result_urls(raw),
+            "trace": steps,
+        }
 
     # --- 5. Grade web evidence -----------------------------------------------
     def grade_web_evidence(state: AgentState) -> dict[str, Any]:
         web_results = state.get("web_results") or ""
         if not web_results.strip():
-            log("Web Grader", "weak (search returned nothing)")
-            return {"web_grade": "weak"}
+            return {
+                "web_grade": "weak",
+                "trace": note("Web Grader", "weak (search returned nothing)"),
+            }
 
         grade = grade_evidence(state["question"], web_results, grader)
-        log("Web Grader", grade)
-        return {"web_grade": grade}
+        return {"web_grade": grade, "trace": note("Web Grader", grade)}
 
     def decide_after_web_grade(
         state: AgentState,
@@ -197,19 +236,22 @@ def build_nodes(
         # Rewrite from the original wording, not from an earlier rewrite, so
         # successive attempts cannot drift away from what was asked.
         question = state["question"]
+        steps: list[str] = []
         rewritten = guard(
             "Rewriter",
             lambda: message_text((REWRITE_PROMPT | llm).invoke({"question": question})),
             question,
+            steps,
         ).strip()
         # An empty rewrite would retrieve nothing at all; keep the original.
         rewritten = rewritten or question
-        log("Rewriter", rewritten)
+        steps += note("Rewriter", rewritten)
         # retry_count increments even when the rewrite failed, so a broken LLM
         # cannot spin this loop.
         return {
             "current_query": rewritten,
             "retry_count": state.get("retry_count", 0) + 1,
+            "trace": steps,
         }
 
     # --- 7/8/9. Generation ---------------------------------------------------
@@ -217,10 +259,21 @@ def build_nodes(
         tag: str, prompt: Any, variables: dict[str, Any], source_used: str
     ) -> dict[str, Any]:
         """Render one answer, reporting an honest failure rather than raising."""
-        answer = guard(tag, lambda: message_text((prompt | llm).invoke(variables)), "")
+        steps: list[str] = []
+        answer = guard(
+            tag, lambda: message_text((prompt | llm).invoke(variables)), "", steps
+        )
         if not answer.strip():
-            return {"answer": GENERATION_FAILED, "source_used": "error"}
-        return {"answer": answer, "source_used": source_used}
+            return {
+                "answer": GENERATION_FAILED,
+                "source_used": "error",
+                "trace": steps + note(tag, "produced no answer; reporting an error"),
+            }
+        return {
+            "answer": answer,
+            "source_used": source_used,
+            "trace": steps + note(tag, f"answered from {source_used}"),
+        }
 
     def generate_from_kb(state: AgentState) -> dict[str, Any]:
         return _generate(
@@ -251,10 +304,10 @@ def build_nodes(
 
     # --- 10. Insufficient evidence -------------------------------------------
     def answer_insufficient(state: AgentState) -> dict[str, Any]:
-        log("Fallback", "no sufficient evidence in KB or web")
         return {
             "answer": INSUFFICIENT_ANSWER,
             "source_used": "insufficient_evidence",
+            "trace": note("Fallback", "no sufficient evidence in KB or web"),
         }
 
     return {

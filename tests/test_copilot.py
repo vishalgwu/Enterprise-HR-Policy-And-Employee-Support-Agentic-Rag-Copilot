@@ -18,6 +18,7 @@ def _state(**overrides):
         "kb_grade": "good",
         "answer": "  Twenty days.  ",
         "source_used": "private_kb",
+        "trace": ["Router: kb", "KB Retriever: 1 chunk(s)", "KB Grader: good"],
     }
     state.update(overrides)
     return state
@@ -49,6 +50,21 @@ def test_grounded_distinguishes_evidence_backed_answers():
     assert not to_answer(_state(source_used="error")).grounded
 
 
+def test_the_trace_is_carried_through_to_the_api_contract():
+    result = to_answer(_state())
+    assert result.trace[0] == "Router: kb"
+    assert len(result.trace) == 3
+
+
+def test_sources_come_from_the_state_citations_when_the_graph_wrote_them():
+    """`retrieve_kb` already cited the chunks; the projection must not re-derive
+    them and quietly disagree with what the run recorded."""
+    cited = [{"source": "pay.md", "title": "Pay", "department": "hr",
+              "doc_type": "markdown"}]
+    result = to_answer(_state(citations=cited))
+    assert [s.source for s in result.sources] == ["pay.md"]
+
+
 def test_a_missing_trace_does_not_break_the_projection():
     result = to_answer({"question": "q", "answer": "a"})
     assert result.route is None and result.kb_chunks == 0 and result.sources == []
@@ -66,6 +82,13 @@ def test_render_answer_shows_the_decision_trace():
     assert "SOURCE USED   private_kb" in text
     assert "leave-and-time-off.md" in text
     assert "Twenty days." in text
+
+
+def test_render_answer_lists_the_trace_steps():
+    text = render_answer(to_answer(_state()))
+    assert "TRACE" in text
+    assert "1. Router: kb" in text
+    assert "TRACE" not in render_answer(to_answer(_state()), show_trace=False)
 
 
 def test_render_answer_omits_the_rewrite_line_when_there_was_none():
