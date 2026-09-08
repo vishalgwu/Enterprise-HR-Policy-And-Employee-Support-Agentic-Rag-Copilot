@@ -106,6 +106,55 @@ def test_enabled_tracing_reaches_the_environment_langchain_reads():
     _clear_tracing_env()
 
 
+def test_traces_are_redacted_by_default():
+    """This system traces employee HR questions and internal policy text."""
+    s = Settings(_env_file=None)
+    assert s.langsmith_hide_inputs and s.langsmith_hide_outputs
+    assert s.tracing_redacted
+
+
+def test_redaction_exports_the_literal_string_langsmith_compares_against():
+    """langsmith does `get_env_var("HIDE_INPUTS") == "true"` -- exactly that.
+
+    "True" or "1" would be read as false and silently upload every question.
+    """
+    _clear_tracing_env()
+    Settings(
+        _env_file=None, LANGSMITH_TRACING=True, LANGSMITH_API_KEY="k"
+    ).export_client_env()
+    assert os.environ["LANGSMITH_HIDE_INPUTS"] == "true"
+    assert os.environ["LANGSMITH_HIDE_OUTPUTS"] == "true"
+    _clear_tracing_env()
+
+
+def test_redaction_can_be_turned_off_deliberately():
+    _clear_tracing_env()
+    s = Settings(
+        _env_file=None,
+        LANGSMITH_TRACING=True,
+        LANGSMITH_API_KEY="k",
+        LANGSMITH_HIDE_INPUTS=False,
+        LANGSMITH_HIDE_OUTPUTS=False,
+    )
+    s.export_client_env()
+    assert not s.tracing_redacted
+    assert os.environ["LANGSMITH_HIDE_INPUTS"] == "false"
+    _clear_tracing_env()
+
+
+def test_openai_key_is_never_exported_by_this_project(monkeypatch):
+    """Nothing here uses OpenAI; langchain-openai is only a Pinecone dependency.
+
+    .env may carry OPENAI_API_KEY, but pydantic-settings reads the file without
+    exporting it and export_client_env does not forward it, so no OpenAI client
+    can be configured by accident. This fails if anyone reintroduces
+    load_dotenv(), which would export the whole file.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    Settings(_env_file=None).export_client_env()
+    assert "OPENAI_API_KEY" not in os.environ
+
+
 def test_disabled_tracing_clears_a_switch_left_in_the_environment():
     """A stray key must not start shipping questions to a third party."""
     os.environ["LANGSMITH_TRACING"] = "true"

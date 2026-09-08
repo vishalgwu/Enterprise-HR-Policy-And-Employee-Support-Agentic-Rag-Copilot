@@ -21,7 +21,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 91 tests, offline, no credentials needed
+pytest                                 # 101 tests, offline, no credentials needed
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
 python scripts/ingest_public_web.py    # scraped article     -> "public-web"
 python scripts/demo.py                 # four demos, one per graph path
@@ -95,9 +95,26 @@ servers — for an HR copilot that is employee questions and internal policy lea
 It must be a decision, not something a stray key in the environment turns on. `/health` reports
 `tracing` so a running deployment shows it rather than hiding it in a file.
 
-**Nothing here uses OpenAI.** `.env` carries a lowercase `openai_api` key that no module reads;
-it is deliberately lowercase so no library picks it up as `OPENAI_API_KEY`. Do not "normalise" that
-name — `langchain-openai` is installed (as a `langchain-pinecone` dependency) and would find it.
+**Traces are redacted by default, and that is what makes tracing safe to enable here.**
+`langsmith_hide_inputs` / `langsmith_hide_outputs` default to `True`, exported as
+`LANGSMITH_HIDE_INPUTS` / `LANGSMITH_HIDE_OUTPUTS`. LangSmith still receives the run tree, timings,
+routing and grading decisions, token counts and errors — everything needed to debug the agent — but
+not the question text or the retrieved policy. Verified end to end against the live service: a probe
+run carrying a sentinel string arrived with `inputs={}` and `outputs=None`. `/health` reports
+`tracing_redacted` so "we turned it off to debug" cannot quietly become production.
+
+**These must be the literal string `"true"`.** `langsmith.Client.__init__` does
+`ls_utils.get_env_var("HIDE_INPUTS") == "true"`, an exact comparison — `"True"` or `"1"` reads as
+false and silently uploads every question. `get_env_var` is also `lru_cache`d and searches
+`LANGSMITH_*` then `LANGCHAIN_*`, so the variables must be in place before the first LangSmith
+client is constructed. They are, because `export_client_env` runs when `app.core.config` is
+imported, which precedes every client. Changing them at runtime will not take effect.
+
+**Nothing here uses OpenAI**, and `.env` may carry `OPENAI_API_KEY` harmlessly. pydantic-settings
+reads the file *without* exporting it, `Settings` has `extra="ignore"`, and `export_client_env` does
+not forward it — so no OpenAI client can be configured by accident even though `langchain-openai` is
+installed as a `langchain-pinecone` dependency. `test_openai_key_is_never_exported_by_this_project`
+pins that, and would fail if anyone reintroduced `load_dotenv()`, which exports the whole file.
 
 **Write `.gitignore` as UTF-8 and verify the bytes.** Editors on this machine have twice saved it
 as UTF-16, which git cannot parse — it silently ignores nothing, and `.env` shows up as untracked

@@ -158,10 +158,28 @@ class Settings(BaseSettings):
         default="hr-copilot", validation_alias="LANGSMITH_PROJECT"
     )
 
+    # Payload redaction, defaulting to ON because this system traces employee HR
+    # questions and internal policy text. With these set, LangSmith still
+    # receives the run tree, timings, routing and grading decisions, token
+    # counts and errors -- everything needed to debug the agent -- but not the
+    # question text or the retrieved policy. Set them false in .env when
+    # debugging a specific answer, deliberately and temporarily.
+    langsmith_hide_inputs: bool = Field(
+        default=True, validation_alias="LANGSMITH_HIDE_INPUTS"
+    )
+    langsmith_hide_outputs: bool = Field(
+        default=True, validation_alias="LANGSMITH_HIDE_OUTPUTS"
+    )
+
     @property
     def tracing_enabled(self) -> bool:
         """Tracing needs both the switch and a key; either alone does nothing."""
         return bool(self.langsmith_tracing and self.langsmith_api_key.strip())
+
+    @property
+    def tracing_redacted(self) -> bool:
+        """True when no question or policy text is uploaded with a trace."""
+        return bool(self.langsmith_hide_inputs and self.langsmith_hide_outputs)
 
     # --- Paths ---------------------------------------------------------------
     @property
@@ -249,6 +267,15 @@ class Settings(BaseSettings):
             os.environ["LANGSMITH_API_KEY"] = self.langsmith_api_key.strip()
             os.environ["LANGSMITH_ENDPOINT"] = self.langsmith_endpoint
             os.environ["LANGSMITH_PROJECT"] = self.langsmith_project
+            # langsmith compares these against the literal string "true"
+            # (Client.__init__ -> ls_utils.get_env_var("HIDE_INPUTS")), so they
+            # must be exactly that, not "True" or "1".
+            os.environ["LANGSMITH_HIDE_INPUTS"] = (
+                "true" if self.langsmith_hide_inputs else "false"
+            )
+            os.environ["LANGSMITH_HIDE_OUTPUTS"] = (
+                "true" if self.langsmith_hide_outputs else "false"
+            )
         else:
             for name in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
                 os.environ.pop(name, None)

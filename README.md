@@ -24,7 +24,8 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 91 tests, no network, no credentials | Implemented |
+| Test suite — 101 tests, no network, no credentials | Implemented |
+| LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | FastAPI service | `/health` only; `/chat`, `/upload`, `/ingest`, `/feedback`, `/admin`, `/logs` not yet built |
 | SQLite audit layer (chat history, feedback, traces) | Not yet built |
 | HTML/CSS/JS frontend | Not yet built |
@@ -249,6 +250,40 @@ are in domain. "What is the capital of France?" is stopped by the gate and never
 A fabricated *"quokka grooming sabbatical"* question clears the gate — it looks lexically like leave
 policy — and is caught by the grader. Removing either leaves a gap.
 
+## Observability
+
+LangSmith tracing is supported and **off unless `LANGSMITH_TRACING` is true and a key is set** —
+either alone does nothing, and when tracing is off the switch is actively cleared from the
+environment so a stray key cannot turn it on.
+
+The part that matters for an HR product: **traces are redacted by default.**
+
+| | Uploaded to LangSmith |
+|---|---|
+| Run tree, node sequence, timings | yes |
+| Routing and grading decisions, retry count | yes |
+| Token counts, errors, latency | yes |
+| The employee's question | **no** |
+| Retrieved policy text | **no** |
+
+`LANGSMITH_HIDE_INPUTS` and `LANGSMITH_HIDE_OUTPUTS` default to true. That is enough to debug the
+agent — which path a question took, where it was slow, what failed — without employee questions or
+internal policy leaving the deployment.
+
+Verified end to end rather than assumed: a probe run carrying a sentinel string was sent to the live
+service and read back with `inputs={}` and `outputs=None`.
+
+`/health` reports both flags, so a running deployment shows its own posture:
+
+```json
+{ "status": "ok", "tracing": true, "tracing_redacted": true }
+```
+
+Turn redaction off only to debug a specific answer, and turn it back on — the `/health` field exists
+so that a temporary change does not quietly become permanent.
+
+---
+
 ## Setup
 
 Requires Python 3.13 and a Pinecone account. Embeddings run locally, so the first run downloads
@@ -295,7 +330,7 @@ python scripts/demo.py 2              # just demo 2
 python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
-pytest                                # 91 tests, no network, no credentials
+pytest                                # 101 tests, no network, no credentials
 ```
 
 Ask a single question:
@@ -364,7 +399,7 @@ app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
 app/api/                  FastAPI routers (only /health so far, in app/main.py)
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    91 tests over fakes -- no network, no credentials
+tests/                    101 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
 step.md                   the 16-step build plan this project is working through

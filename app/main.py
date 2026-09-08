@@ -57,6 +57,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # off the deployment; whether it is on should be visible, not
             # inferred from a config file nobody reads in production.
             "tracing": settings.tracing_enabled,
+            # Whether traces carry the employee's question and the retrieved
+            # policy text. Surfaced so "we turned redaction off to debug" cannot
+            # quietly become the permanent state of production.
+            "tracing_redacted": settings.tracing_redacted,
         }
 
     return api
