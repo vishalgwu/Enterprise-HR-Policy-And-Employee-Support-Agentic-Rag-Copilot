@@ -139,6 +139,11 @@ TRACING_VARS = (
 
 PROVIDER_VARS = ("OPENAI_API_KEY",)
 
+# The admin gate. A shell that exported one -- `ADMIN_API_KEY=k python run.py`
+# leaves it set for the rest of that session -- would otherwise make the tests
+# that assert admin is *off* pass or fail by terminal.
+GATE_VARS = ("ADMIN_API_KEY",)
+
 
 @pytest.fixture(autouse=True)
 def clean_process_env(monkeypatch):
@@ -158,7 +163,7 @@ def clean_process_env(monkeypatch):
     `monkeypatch.delenv(..., raising=False)` records nothing when the variable
     is absent, so it has nothing to undo for one the test then creates.
     """
-    for name in TRACING_VARS + PROVIDER_VARS:
+    for name in TRACING_VARS + PROVIDER_VARS + GATE_VARS:
         monkeypatch.delenv(name, raising=False)
 
 

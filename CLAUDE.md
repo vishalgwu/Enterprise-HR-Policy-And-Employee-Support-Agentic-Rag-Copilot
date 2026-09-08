@@ -23,7 +23,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 210 tests, offline, no credentials needed
+pytest                                 # 214 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -378,6 +378,19 @@ for chat replies, `web_results_to_text` and `web_result_urls` for Tavily. A node
 a provider's response shape directly is a bug waiting for the next SDK release;
 `tests/test_clients.py` pins all three offline.
 
+**`message_text` also strips the model's dangling citation markers.**
+`openai/gpt-oss-*` emits OpenAI's file-citation tokens — `【2†L1-L4】`, `【4:2†source】` — because it was
+trained to cite retrieved documents that way. Nothing in this system numbers documents like that, so
+they reference nothing at all. Observed live on a web-fallback answer about paid holidays, which
+came back with four of them inside a markdown table. They matter more here than they would
+elsewhere: in an HR answer they read as authoritative citations to sources that do not exist,
+sitting next to the real ones this product does supply. `CITATION_ARTIFACT` is bounded rather than
+greedy so an unmatched `【` in legitimate text costs that fragment and not the rest of the reply, and
+it swallows the preceding whitespace so removing a token mid-sentence leaves no double space.
+Stripping happens in `message_text` — the one funnel every reply passes through — so the API
+response, the CLI and the audit record all hold the same clean text. Do not move it to the
+frontend: the audit log would then keep the noise for ever.
+
 **Graph nodes are closures, built once per graph.** `build_nodes` takes the LLM, retriever and
 search tool and closes over them, so a run constructs each once and tests can inject fakes — that
 is how the rewrite loop and the insufficient-evidence path are tested deterministically, without
@@ -491,6 +504,16 @@ the time any test runs. `_env_file=None` alone is not enough — it silences the
 environment, so the test still reads local configuration and passes or fails by machine. Use
 `monkeypatch.delenv` as well; `test_tracing_is_off_by_default` is the worked example.
 
+**That rule was broken in `tests/test_api.py` and nothing noticed for three commits.** Its `client()`
+helper built `Settings(**base)` without `_env_file=None`, so the whole API suite read the
+developer's real `.env`. Three tests asserting an *unconfigured* admin surface passed only because
+`ADMIN_API_KEY` happened to be empty there; filling it in — an ordinary thing to do to use the admin
+UI — broke them, and the suite's claim to need no `.env` was simply false. The helper now passes
+`_env_file=None`, and `clean_process_env` clears `ADMIN_API_KEY` too, because
+`ADMIN_API_KEY=k python run.py` leaves it exported for the rest of that shell. Verify a change here
+the way it was verified: run the suite once normally, once with `ADMIN_API_KEY=leaked-from-shell`
+set. Both must pass.
+
 `pyproject.toml` sets `pythonpath = [".", "tests"]`, which is how `tests/test_graph.py` imports
 `conftest` directly. Do **not** add `tests/__init__.py` — it turns the directory into a package and
 that import stops resolving.
@@ -600,6 +623,14 @@ and evidence lists are rendered the moment an answer lands, into whichever inspe
 `animation-fill-mode: both` the items were then stuck holding the `from` keyframe, so opening the
 tab showed an empty panel with the content sitting there at `opacity: 0`. The JS adds the class when
 the container is actually on screen.
+
+**The answer renderer handles paragraphs, lists, `**bold**`, `*italic*`, `` `code` `` and pipe
+tables — and every one of them builds elements rather than parsing markup.** Tables and italics
+were both added after watching real answers: a live web answer sent a correct five-line markdown
+table, which fell through to the paragraph branch and came out as one run-on line of pipes and
+dashes, and the model routinely cites its source as `*leave-and-time-off.md*`. Bold stays first in
+the `INLINE` alternation so `**x**` wins over `*x*`. A table gets its own `overflow-x` box, because
+a wide one must not make the whole conversation scroll sideways.
 
 **The graph highlight is derived from the trace, not from a second source of truth.** `TRACE_NODE`
 in `app.js` maps a trace entry's tag (`"KB Retriever"`, `"Generate/Web"`) to a node id, and

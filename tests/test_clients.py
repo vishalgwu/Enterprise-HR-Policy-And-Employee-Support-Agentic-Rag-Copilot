@@ -61,6 +61,47 @@ def test_something_that_is_not_a_message_is_still_coerced():
     assert message_text(42) == "42"
 
 
+# --- Provider citation artifacts ---------------------------------------------
+
+
+def test_a_dangling_citation_marker_is_stripped():
+    """`openai/gpt-oss-*` emits OpenAI's file-citation tokens because it was
+    trained to cite retrieved documents that way. Nothing here numbers documents
+    like that, so they point at sources that do not exist -- and in an HR answer
+    they read as authoritative, sitting next to the real citations this product
+    does supply. Observed live: four of them in one web-fallback answer."""
+    reply = AIMessage(
+        content="Federal employees get 11 days【1†L1-L3】【2†L5-L7】 a year."
+    )
+    assert message_text(reply) == "Federal employees get 11 days a year."
+
+
+def test_stripping_a_marker_does_not_leave_a_double_space():
+    """The leading whitespace is part of the match, so a token removed from the
+    middle of a sentence closes up cleanly."""
+    assert (
+        message_text(AIMessage(content="Private sector 【2†L1-L4】 averages 8."))
+        == "Private sector averages 8."
+    )
+
+
+def test_an_unmatched_bracket_does_not_swallow_the_answer():
+    """Bounded rather than greedy: a stray opening bracket in legitimate text
+    must cost that fragment, never the rest of the reply."""
+    text = "See 【 and then a very long policy answer that must survive intact."
+    assert message_text(AIMessage(content=text)) == text
+
+
+def test_ordinary_text_is_untouched():
+    """Including the markdown the console renders -- bold, lists, pipe tables."""
+    plain = (
+        "You get **20 days**, accrued at 1.67 per month.\n\n"
+        "| Sector | Days |\n|---|---|\n| Private | 8 |\n\n"
+        "- Rolls over up to 5."
+    )
+    assert message_text(AIMessage(content=plain)) == plain
+
+
 # --- Rate limiting -----------------------------------------------------------
 
 

@@ -7,6 +7,7 @@ this module cost an API call.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -142,8 +143,27 @@ def is_rate_limit(exc: BaseException) -> bool:
     )
 
 
+# `openai/gpt-oss-*` emits OpenAI's file-citation tokens -- 【2†L1-L4】,
+# 【4:2†source】 -- because it was trained to cite retrieved documents that way.
+# Nothing in this system numbers documents like that, so they reference nothing
+# at all; observed live on a web-fallback answer about paid holidays, which came
+# back with four of them. They matter more here than they would elsewhere: in an
+# HR answer they read as authoritative citations to sources that do not exist,
+# next to real ones this product does supply. The leading whitespace is part of
+# the match so removing a token mid-sentence does not leave a double space.
+#
+# Bounded rather than greedy on purpose -- an unmatched opening bracket in
+# legitimate text must not swallow the rest of the answer.
+CITATION_ARTIFACT = re.compile(r"[ 	]*【[^】]{0,120}】")
+
+
+def strip_citation_artifacts(text: str) -> str:
+    """Remove a provider's dangling citation markers from a reply."""
+    return CITATION_ARTIFACT.sub("", text)
+
+
 def message_text(message: Any) -> str:
-    """Flatten a chat model's reply to plain text.
+    """Flatten a chat model's reply to plain text, and clean provider noise.
 
     `.content` is a plain string for Groq and OpenAI today, but the message
     interface allows a list of content blocks and providers do return one. The
@@ -154,15 +174,19 @@ def message_text(message: Any) -> str:
     """
     content = getattr(message, "content", message)
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
+        text = content
+    elif isinstance(content, list):
         # Content blocks are dicts like {"type": "text", "text": "..."}; keep
         # only the text parts, since an image block has nothing to contribute.
-        return "".join(
+        text = "".join(
             block.get("text", "") if isinstance(block, dict) else str(block)
             for block in content
         )
-    return "" if content is None else str(content)
+    else:
+        text = "" if content is None else str(content)
+    # Cleaned here, at the one funnel every reply passes through, so the API
+    # response, the CLI and the audit record all hold the same clean text.
+    return strip_citation_artifacts(text)
 
 
 def web_results_to_text(result: Any) -> str:

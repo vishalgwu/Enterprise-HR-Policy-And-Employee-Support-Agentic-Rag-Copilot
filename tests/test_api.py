@@ -20,8 +20,17 @@ ADMIN = {"X-Admin-Key": "secret-admin-key"}
 
 
 def client(copilot=None, **overrides) -> TestClient:
+    # `_env_file=None` is not tidiness. Without it `Settings()` reads the
+    # developer's real .env, and the tests asserting an *unconfigured* admin
+    # surface passed only while ADMIN_API_KEY happened to be empty there --
+    # filling it in broke three of them. A test asserting a default has to
+    # isolate from both config sources; `clean_process_env` covers the other.
     base = dict(
-        GROQ_API="g", TAVILY_API="t", PINECONE_API="p", PINECONE_INDEX="test-index"
+        _env_file=None,
+        GROQ_API="g",
+        TAVILY_API="t",
+        PINECONE_API="p",
+        PINECONE_INDEX="test-index",
     )
     base.update(overrides)
     return TestClient(create_app(Settings(**base), copilot=copilot))

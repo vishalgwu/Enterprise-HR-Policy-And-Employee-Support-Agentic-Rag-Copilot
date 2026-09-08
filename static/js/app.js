@@ -141,13 +141,61 @@
 
   const BULLET = /^\s*([-*•]|\d+[.)])\s+/;
 
+  // A pipe table's second line is its separator: |---|:--:|---|
+  const TABLE_RULE = /^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$/;
+
+  const isTable = (lines) =>
+    lines.length >= 2 && lines[0].trim().startsWith("|") && TABLE_RULE.test(lines[1]);
+
+  const cellsOf = (line) =>
+    line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+
+  /** Build a real <table> from a markdown pipe table.
+   *
+   *  Without this the block fell through to the paragraph branch, which joins
+   *  its lines with a space -- so a table arrived as one run-on line of pipes
+   *  and dashes. Observed on a live web-fallback answer. Cells go through
+   *  appendInline, so **bold** inside a cell works and nothing is parsed as
+   *  markup. */
+  function appendTable(container, lines) {
+    const wrap = document.createElement("div");
+    wrap.className = "table-scroll";
+    const table = document.createElement("table");
+
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const cell of cellsOf(lines[0])) {
+      const th = document.createElement("th");
+      appendInline(th, cell);
+      headRow.appendChild(th);
+    }
+    head.appendChild(headRow);
+    table.appendChild(head);
+
+    const tbody = document.createElement("tbody");
+    for (const line of lines.slice(2)) {
+      const tr = document.createElement("tr");
+      for (const cell of cellsOf(line)) {
+        const td = document.createElement("td");
+        appendInline(td, cell);
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+  }
+
   function renderRich(container, text) {
     container.textContent = "";
     for (const block of String(text).split(/\n{2,}/)) {
       const lines = block.split("\n").filter((line) => line.trim() !== "");
       if (!lines.length) continue;
 
-      if (lines.every((line) => BULLET.test(line))) {
+      if (isTable(lines)) {
+        appendTable(container, lines);
+      } else if (lines.every((line) => BULLET.test(line))) {
         const list = document.createElement("ul");
         for (const line of lines) {
           const item = document.createElement("li");

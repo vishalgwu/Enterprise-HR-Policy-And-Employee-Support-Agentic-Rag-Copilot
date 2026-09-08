@@ -498,6 +498,26 @@ body[data-admin="off"] [data-admin-only] { display: none; }
   border-radius: 50%;
   background: var(--accent-2);
 }
+/* Markdown tables inside an answer. Scrolls inside its own box: a wide table
+   must not make the whole conversation scroll sideways. */
+.table-scroll { overflow-x: auto; margin: 0 0 10px; }
+.msg__body table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.msg__body th, .msg__body td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--stroke-soft);
+  white-space: nowrap;
+}
+.msg__body th {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--stroke);
+}
+.msg__body tbody tr:last-child td { border-bottom: 0; }
+
 .msg__body code {
   padding: 1px 5px;
   border-radius: 5px;
