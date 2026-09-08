@@ -359,6 +359,7 @@
   // Trace entries are written by `note()` in app/agent/nodes.py as
   // "<tag>: <message>". The tag is the stable half, so the mapping keys on it.
   const TRACE_NODE = {
+    Contextualiser: "contextualize",
     Router: "route",
     "KB Retriever": "retrieve",
     "KB Grader": "gradekb",
@@ -403,6 +404,12 @@
         if (node && visited[visited.length - 1] !== node) visited.push(node);
       }
       if (!visited.length) return;
+
+      // `contextualize` runs on every question but only *reports* when there
+      // was history to resolve against — a first question costs no LLM call
+      // there and writes no trace step. Lighting it regardless is the honest
+      // picture: the node ran, it just had nothing to do.
+      if (visited[0] !== "contextualize") visited.unshift("contextualize");
 
       const paint = (index) => {
         if (index >= visited.length) return;
@@ -547,7 +554,7 @@
     };
   }
 
-  function addAnswer(result) {
+  function addAnswer(result, animate = true) {
     const wrap = el("div", "msg msg--bot");
     const card = el("div", "msg__card");
 
@@ -565,9 +572,17 @@
     wrap.appendChild(card);
     thread.appendChild(wrap);
 
-    typeOut(bodyEl, result.answer || "", () => {
+    const decorate = () => {
       const source = result.source_used || "unknown";
       foot.appendChild(badge(`badge--source badge--${source}`, SOURCE_LABEL[source] || source));
+
+      // Shown only when the agent had to put a referent back, because that is
+      // the one thing a reader cannot reconstruct from their own message.
+      if (result.resolved_question) {
+        const chip = el("span", "badge badge--resolved", "read as: ");
+        chip.appendChild(el("b", null, result.resolved_question));
+        foot.appendChild(chip);
+      }
 
       if (result.kb_grade) foot.appendChild(badge(`badge--${result.kb_grade}`, "kb ", result.kb_grade));
       if (result.web_grade) foot.appendChild(badge(`badge--${result.web_grade}`, "web ", result.web_grade));
@@ -586,7 +601,16 @@
         foot.appendChild(badge("", "audit #", result.audit_id));
       }
       scrollThread();
-    });
+    };
+
+    // Rehydrating a saved conversation replays many answers at once; typing
+    // each one out would make switching chats take as long as asking did.
+    if (animate) {
+      typeOut(bodyEl, result.answer || "", decorate);
+    } else {
+      renderRich(bodyEl, result.answer || "");
+      decorate();
+    }
 
     scrollThread();
   }
@@ -606,11 +630,213 @@
     scrollThread();
   }
 
+  /* ── Conversations ─────────────────────────────────────────────────────── */
+
+  /**
+   * Conversations live in this browser, not on the server.
+   *
+   * `/api/chat` is deliberately open — employees ask without logging in — so
+   * there is no identity a server-side conversation could be scoped to. An
+   * endpoint that listed conversations would either need auth this product does
+   * not have, or would let anyone read anyone else's HR questions. Keeping the
+   * thread client-side and posting it back with each turn avoids inventing a
+   * half-authenticated store for the most sensitive data here.
+   *
+   * The server still gets the record it needs: `conversation_id` goes on the
+   * audit row, so an admin can group a thread in `/api/audit` without any new
+   * unauthenticated read path existing.
+   *
+   * localStorage rather than sessionStorage, deliberately, and the opposite
+   * choice from the admin key: a conversation is the user's own work and should
+   * survive closing the tab; the admin key is a credential and should not.
+   */
+  const KEY = "hrcopilot.conversations";
+  const MAX_CONVERSATIONS = 30;
+  const HISTORY_TURNS = 8; // matches normalise_history() on the server
+
+  const chats = {
+    items: [],
+    activeId: null,
+
+    load() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(KEY) || "{}");
+        this.items = Array.isArray(raw.items) ? raw.items : [];
+        this.activeId = raw.activeId || null;
+      } catch {
+        // A corrupt or unreadable store must not leave the page blank.
+        this.items = [];
+        this.activeId = null;
+      }
+      if (!this.active()) this.create({ render: false });
+    },
+
+    save() {
+      try {
+        this.items = this.items.slice(0, MAX_CONVERSATIONS);
+        localStorage.setItem(
+          KEY,
+          JSON.stringify({ items: this.items, activeId: this.activeId })
+        );
+      } catch {
+        // Quota, or a browser blocking site data. The conversation still works
+        // for this session; only its persistence is lost.
+        toast("info", "This conversation will not be remembered — browser storage is full.");
+      }
+    },
+
+    active() {
+      return this.items.find((c) => c.id === this.activeId) || null;
+    },
+
+    create({ render = true } = {}) {
+      const convo = {
+        id: (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()),
+        title: "New conversation",
+        updated: Date.now(),
+        turns: [],
+      };
+      this.items.unshift(convo);
+      this.activeId = convo.id;
+      this.save();
+      if (render) {
+        renderConvos();
+        openConversation(convo);
+      }
+      return convo;
+    },
+
+    remove(id) {
+      this.items = this.items.filter((c) => c.id !== id);
+      if (this.activeId === id) {
+        // Never leave the app with no conversation open.
+        this.activeId = this.items.length ? this.items[0].id : null;
+        if (!this.activeId) this.create({ render: false });
+      }
+      this.save();
+      renderConvos();
+      openConversation(this.active());
+    },
+
+    select(id) {
+      this.activeId = id;
+      this.save();
+      renderConvos();
+      openConversation(this.active());
+    },
+
+    append(turn) {
+      const convo = this.active() || this.create({ render: false });
+      convo.turns.push(turn);
+      convo.updated = Date.now();
+      // The first thing asked names the thread; a conversation called "New
+      // conversation" in a list of ten is no help to anyone.
+      if (turn.role === "user" && convo.turns.filter((t) => t.role === "user").length === 1) {
+        convo.title = turn.content.slice(0, 60);
+      }
+      // Most recently used first, which is the order a chat list wants.
+      this.items = [convo, ...this.items.filter((c) => c.id !== convo.id)];
+      this.save();
+      renderConvos();
+    },
+
+    /** The turns to send as context: role and content only.
+     *  Never the stored metadata — the server has no use for our badges, and
+     *  the contextualise prompt is charged by the token. */
+    historyFor() {
+      const convo = this.active();
+      if (!convo) return [];
+      return convo.turns
+        .slice(-HISTORY_TURNS)
+        .map((t) => ({ role: t.role, content: t.content }));
+    },
+  };
+
+  function relativeTime(ms) {
+    const mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.round(hours / 24)}d ago`;
+  }
+
+  function renderConvos() {
+    const wrap = $("#convos");
+    wrap.textContent = "";
+
+    for (const convo of chats.items) {
+      const row = el("div", `convo${convo.id === chats.activeId ? " is-active" : ""}`);
+
+      const open = el("button", "convo__open");
+      open.type = "button";
+      open.appendChild(el("div", "convo__title", convo.title));
+      const asked = convo.turns.filter((t) => t.role === "user").length;
+      open.appendChild(
+        el("div", "convo__meta",
+          `${asked} question${asked === 1 ? "" : "s"} · ${relativeTime(convo.updated)}`)
+      );
+      open.addEventListener("click", () => chats.select(convo.id));
+
+      const del = el("button", "convo__del", "×");
+      del.type = "button";
+      del.title = "Delete this conversation";
+      del.setAttribute("aria-label", `Delete conversation: ${convo.title}`);
+      del.addEventListener("click", (event) => {
+        event.stopPropagation();
+        // Deleting is irreversible and there is no server copy to recover from.
+        if (asked && !window.confirm(`Delete "${convo.title}"? This cannot be undone.`)) {
+          return;
+        }
+        chats.remove(convo.id);
+        toast("info", "Conversation deleted.");
+      });
+
+      row.append(open, del);
+      wrap.appendChild(row);
+    }
+  }
+
+  /** Rebuild the thread for a conversation, without animating anything. */
+  function openConversation(convo) {
+    thread.textContent = "";
+    if (!convo || !convo.turns.length) {
+      thread.appendChild(buildWelcome());
+      graph.reset();
+      renderTrace([]);
+      renderSources({});
+      input.focus();
+      return;
+    }
+    for (const turn of convo.turns) {
+      if (turn.role === "user") addQuestion(turn.content);
+      else if (turn.error) addFailure(turn.content);
+      else addAnswer({ ...(turn.meta || {}), answer: turn.content }, false);
+    }
+    // The inspector shows the last answer, which is what "where am I?" means
+    // after switching back into a conversation.
+    const last = [...convo.turns].reverse().find((t) => t.role === "assistant" && !t.error);
+    if (last && last.meta) {
+      renderTrace(last.meta.trace);
+      renderSources(last.meta);
+      graph.render(last.meta.trace);
+      graph.verdict(last.meta, last.meta.latency_ms);
+    } else {
+      graph.reset();
+    }
+    scrollThread();
+  }
+
   async function ask(question) {
     const welcome = $("#welcome");
     if (welcome) welcome.remove();
 
+    // Captured before the user's turn is appended: the server resolves the
+    // follow-up against what came *before* it.
+    const history = chats.historyFor();
+
     addQuestion(question);
+    chats.append({ role: "user", content: question });
     input.value = "";
     autosize();
     updateCount();
@@ -621,11 +847,23 @@
     const started = performance.now();
 
     try {
-      const result = await api("/api/chat", { method: "POST", json: { question } });
+      const result = await api("/api/chat", {
+        method: "POST",
+        json: {
+          question,
+          history,
+          conversation_id: chats.activeId,
+        },
+      });
       const latency = Math.round(performance.now() - started);
 
       spinner.stop();
       addAnswer(result);
+      chats.append({
+        role: "assistant",
+        content: result.answer || "",
+        meta: { ...result, latency_ms: latency },
+      });
       renderTrace(result.trace);
       renderSources(result);
       stagger($(".panel.is-active"));
@@ -639,8 +877,12 @@
       }
     } catch (error) {
       spinner.stop();
-      addFailure(error.detail || "The request did not complete.");
-      toast("bad", error.detail || "Request failed.");
+      const message = error.detail || "The request did not complete.";
+      addFailure(message);
+      // Stored too, so reopening the conversation does not silently lose the
+      // fact that a question went unanswered.
+      chats.append({ role: "assistant", content: message, error: true });
+      toast("bad", message);
     } finally {
       sendBtn.classList.remove("is-busy");
       sendBtn.disabled = input.value.trim().length < 2;
@@ -679,9 +921,25 @@
     if (question.length >= 2) ask(question);
   });
 
-  $$(".suggest__item").forEach((btn) => {
-    btn.addEventListener("click", () => ask(btn.dataset.q));
-  });
+  // Kept as a detached clone of the server-rendered markup, so an empty
+  // conversation can put the welcome back without this file owning a second
+  // copy of the copy. Cloned again per use: a node can only be in one place.
+  const WELCOME = $("#welcome") ? $("#welcome").cloneNode(true) : null;
+
+  function bindSuggestions(root) {
+    $$(".suggest__item", root).forEach((btn) => {
+      btn.addEventListener("click", () => ask(btn.dataset.q));
+    });
+  }
+
+  function buildWelcome() {
+    if (!WELCOME) return el("div");
+    const node = WELCOME.cloneNode(true);
+    bindSuggestions(node); // listeners do not survive cloneNode
+    return node;
+  }
+
+  bindSuggestions(document);
 
   /* ── Confetti ──────────────────────────────────────────────────────────── */
 
@@ -950,6 +1208,23 @@
   });
 
   /* ── Boot ──────────────────────────────────────────────────────────────── */
+
+  $("#chat-new").addEventListener("click", () => {
+    // An untouched empty conversation is already a new one; making a second
+    // would just leave a row of identical empties in the list.
+    const current = chats.active();
+    if (current && !current.turns.length) {
+      toast("info", "This conversation is already empty.");
+      input.focus();
+      return;
+    }
+    chats.create();
+    toast("ok", "New conversation started.");
+  });
+
+  chats.load();
+  renderConvos();
+  openConversation(chats.active());
 
   health.poll();
   setInterval(() => health.poll(), 30000);

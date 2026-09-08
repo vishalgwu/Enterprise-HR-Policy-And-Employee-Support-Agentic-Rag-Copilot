@@ -1,6 +1,6 @@
 """Wiring for the agentic RAG graph.
 
-    START -> route
+    START -> contextualize                  -> route
       route == direct                       -> direct_answer            -> END
       route == kb                           -> retrieve_kb
     retrieve_kb                             -> grade_kb_evidence
@@ -20,6 +20,7 @@ This module only wires; the node bodies live in `app.agent.nodes`.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -54,6 +55,10 @@ BRANCHES = {
 
 # Unconditional edges.
 EDGES = (
+    # Every question passes through contextualisation, but only a follow-up
+    # costs an LLM call there -- with no history the node resolves to the
+    # question it was given and returns.
+    ("contextualize", "route_question"),
     ("retrieve_kb", "grade_kb_evidence"),
     ("search_web", "grade_web_evidence"),
     # A rewrite retries the private KB first: internal policy is the preferred
@@ -80,7 +85,7 @@ def build_graph(
     for name in NODE_NAMES:
         builder.add_node(name, nodes[name])
 
-    builder.add_edge(START, "route_question")
+    builder.add_edge(START, "contextualize")
     for source, target in EDGES:
         builder.add_edge(source, target)
     for source, (condition, path_map) in BRANCHES.items():
@@ -94,11 +99,21 @@ def build_graph(
     return builder.compile()
 
 
-def ask(question: str, graph: Any = None, verbose: bool = True) -> AgentState:
+def ask(
+    question: str,
+    graph: Any = None,
+    verbose: bool = True,
+    history: Sequence[Mapping[str, Any]] | None = None,
+) -> AgentState:
     """Run one question through the graph and return the final state.
 
     Raises ValueError on an empty question rather than spending a routing call
     to discover there was nothing to answer.
+
+    `history` is the conversation so far, oldest first, as
+    `{"role": "user"|"assistant", "content": ...}`. It is what lets a follow-up
+    resolve; `initial_state` normalises and caps it. Omit it and the run is a
+    single-turn one, identical to before this existed.
 
     Pass an existing `graph` when asking several questions: building one
     constructs the router, grader, retriever and search tool, none of which vary
@@ -107,4 +122,4 @@ def ask(question: str, graph: Any = None, verbose: bool = True) -> AgentState:
     if not question or not question.strip():
         raise ValueError("question must be a non-empty string")
     graph = graph or build_graph(verbose=verbose)
-    return graph.invoke(initial_state(question.strip()))
+    return graph.invoke(initial_state(question.strip(), history))

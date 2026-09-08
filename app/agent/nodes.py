@@ -30,6 +30,7 @@ from typing import Any, Literal
 from app.agent.decisions import get_evidence_grader, get_router, grade_evidence
 from app.agent.decisions import route_question as classify_route
 from app.agent.prompts import (
+    CONTEXTUALIZE_PROMPT,
     DIRECT_ANSWER_PROMPT,
     GENERATION_FAILED,
     INSUFFICIENT_ANSWER,
@@ -57,6 +58,7 @@ _log = get_logger("graph")
 # conditional path maps are checked against it, so a typo fails at build time
 # rather than on whichever question first reaches the mistyped edge.
 NODE_NAMES = (
+    "contextualize",
     "route_question",
     "retrieve_kb",
     "grade_kb_evidence",
@@ -147,9 +149,64 @@ def build_nodes(
                 steps.append(f"{tag}: {detail}")
             return fallback
 
+    def asked(state: AgentState) -> str:
+        """The question every node downstream of `contextualize` should use.
+
+        `question` stays the employee's verbatim wording for the audit log and
+        the UI; this is that question resolved against the conversation. They
+        are the same string whenever there is no history, which is why a
+        single-turn run is unchanged by any of this.
+        """
+        return state.get("standalone_question") or state["question"]
+
+    # --- 0. Resolve a follow-up against the conversation ----------------------
+    def contextualize(state: AgentState) -> dict[str, Any]:
+        """Turn "what about contractors?" into a question that stands alone.
+
+        **No history means no LLM call.** The first question of every
+        conversation takes this node, and paying a round trip to be told a
+        standalone question is already standalone would tax the common case to
+        serve the rarer one.
+
+        Degrades to the original wording, like every other node: a failure here
+        costs the follow-up its context, not the answer.
+        """
+        question = state["question"]
+        history = state.get("history") or []
+        if not history:
+            return {"standalone_question": question, "current_query": question}
+
+        transcript = "\n".join(
+            f"{'Employee' if turn['role'] == 'user' else 'Assistant'}: "
+            f"{turn['content']}"
+            for turn in history
+        )
+        steps: list[str] = []
+        resolved = guard(
+            "Contextualiser",
+            lambda: message_text(
+                (CONTEXTUALIZE_PROMPT | llm).invoke(
+                    {"history": transcript, "question": question}
+                )
+            ),
+            question,
+            steps,
+        ).strip()
+        resolved = resolved or question
+
+        if resolved != question:
+            steps += note("Contextualiser", f"resolved to {resolved!r}")
+        else:
+            steps += note("Contextualiser", "already standalone")
+        return {
+            "standalone_question": resolved,
+            "current_query": resolved,
+            "trace": steps,
+        }
+
     # --- 1. Route ------------------------------------------------------------
     def route_question(state: AgentState) -> dict[str, Any]:
-        question = state["question"]
+        question = asked(state)
         # classify_route survives a Groq tool_use_failed 400, which the router
         # hits often enough to matter: it is on the path of every question.
         route = classify_route(question, router)
@@ -186,7 +243,7 @@ def build_nodes(
                 "trace": note("KB Grader", "weak (nothing passed the similarity gate)"),
             }
 
-        grade = grade_evidence(state["question"], format_documents(docs), grader)
+        grade = grade_evidence(asked(state), format_documents(docs), grader)
         return {"kb_grade": grade, "trace": note("KB Grader", grade)}
 
     def decide_after_kb_grade(
@@ -219,7 +276,7 @@ def build_nodes(
                 "trace": note("Web Grader", "weak (search returned nothing)"),
             }
 
-        grade = grade_evidence(state["question"], web_results, grader)
+        grade = grade_evidence(asked(state), web_results, grader)
         return {"web_grade": grade, "trace": note("Web Grader", grade)}
 
     def decide_after_web_grade(
@@ -235,7 +292,7 @@ def build_nodes(
     def rewrite_query(state: AgentState) -> dict[str, Any]:
         # Rewrite from the original wording, not from an earlier rewrite, so
         # successive attempts cannot drift away from what was asked.
-        question = state["question"]
+        question = asked(state)
         steps: list[str] = []
         rewritten = guard(
             "Rewriter",
@@ -280,7 +337,7 @@ def build_nodes(
             "Generate/KB",
             KB_ANSWER_PROMPT,
             {
-                "question": state["question"],
+                "question": asked(state),
                 "context": format_documents(state.get("kb_docs") or []),
             },
             "private_kb",
@@ -290,7 +347,7 @@ def build_nodes(
         return _generate(
             "Generate/Web",
             WEB_ANSWER_PROMPT,
-            {"question": state["question"], "context": state.get("web_results") or ""},
+            {"question": asked(state), "context": state.get("web_results") or ""},
             "web_search",
         )
 
@@ -298,7 +355,7 @@ def build_nodes(
         return _generate(
             "Generate/Direct",
             DIRECT_ANSWER_PROMPT,
-            {"question": state["question"]},
+            {"question": asked(state)},
             "direct",
         )
 
@@ -311,6 +368,7 @@ def build_nodes(
         }
 
     return {
+        "contextualize": contextualize,
         "route_question": route_question,
         "retrieve_kb": retrieve_kb,
         "grade_kb_evidence": grade_kb_evidence,

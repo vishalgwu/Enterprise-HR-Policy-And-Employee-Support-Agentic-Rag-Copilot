@@ -120,6 +120,24 @@ REWRITE_PROMPT = ChatPromptTemplate.from_messages(
     ]
 )
 
+CONTEXTUALIZE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Rewrite a follow-up question from an HR chat so it stands on its "
+            "own, using the conversation above only to resolve what the "
+            "question refers to.\n"
+            "Replace pronouns and elliptical phrases -- 'it', 'that', 'what "
+            "about contractors?' -- with the thing they point at.\n"
+            "**If the question already stands on its own, return it unchanged.** "
+            "Do not add detail the employee did not ask for, do not merge in the "
+            "previous question, and do not answer anything. Return only the "
+            "question.",
+        ),
+        ("human", "Conversation so far:\n{history}\n\nFollow-up: {question}"),
+    ]
+)
+
 # --- Canned answers ----------------------------------------------------------
 # Not prompts, but the same category of user-visible copy.
 

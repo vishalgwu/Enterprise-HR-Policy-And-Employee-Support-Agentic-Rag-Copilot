@@ -21,11 +21,11 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Groq LLM client (`openai/gpt-oss-20b`, temperature 0) | Implemented, live call verified |
 | Tavily web-search client | Implemented, live call verified |
 | Structured routing + evidence grading | Implemented, 21/21 on a labelled set |
-| LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
+| LangGraph agent (11 nodes: contextualise → route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
 | Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 214 tests, no network, no credentials | Implemented |
+| Test suite — 227 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
@@ -45,14 +45,15 @@ The reference brief and target architecture this is built against are in
 
 ## The agent graph
 
-Ten nodes, wired in [app/agent/graph.py](app/agent/graph.py) over bodies in
+Eleven nodes, wired in [app/agent/graph.py](app/agent/graph.py) over bodies in
 [app/agent/nodes.py](app/agent/nodes.py). The graph never answers from model memory: every
 answer is traceable to internal policy, to cited web results, or to an explicit admission that
 neither had the evidence.
 
 ```mermaid
 graph TD
-    S([START]) --> route[route_question]
+    S([START]) --> ctx[contextualize]
+    ctx --> route[route_question]
     route -. "direct" .-> direct[direct_answer]
     route -. "kb" .-> retrieve[retrieve_kb]
     retrieve --> gradekb[grade_kb_evidence]
@@ -74,6 +75,20 @@ the compiled graph with `python scripts/render_graph.py`, which writes
 [docs/agent-graph.md](docs/agent-graph.md). `test_the_compiled_graph_matches_the_documented_design`
 asserts the compiled edge set equals this design exactly, so the picture cannot drift from the
 code.
+
+**A follow-up is resolved before anything retrieves.** `contextualize` turns *"what about
+contractors?"* into a question that stands on its own, because the bare pronoun retrieves nothing.
+It runs on every question but only costs an LLM call when there is history — a first question is
+already standalone, and paying to be told so would tax the common case. Verified live:
+
+```
+Q: "what about contractors?"   (after a question about dental waiting periods)
+  Contextualiser: resolved to "What about dental waiting periods for contractors?"
+  KB Retriever: 4 chunk(s) for "What about dental waiting periods for contractors?"
+```
+
+The answer carries a `read as:` chip whenever this happened, because it is the one thing a reader
+cannot reconstruct from their own message.
 
 **A rewrite loops back to the KB, not to web search.** A weak retrieval is usually a vocabulary
 mismatch between how an employee phrases a question and how policy is written, so the rewritten
@@ -573,7 +588,7 @@ python run.py                         # start the API and the console on :8000
 python run.py --reload                # development
 python run.py --port 8080             # override API_PORT for one run
 
-pytest                                # 214 tests, no network, no credentials
+pytest                                # 227 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -673,7 +688,7 @@ static/js/app.js          the console's behaviour -- no framework, no build step
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    214 tests over fakes -- no network, no credentials
+tests/                    227 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below

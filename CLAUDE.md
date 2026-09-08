@@ -9,7 +9,7 @@ architecture are checked in: `docs/Enterprise_HR_Agentic_RAG_Problem_Statement_D
 and `docs/architecture.png`. Read them before designing anything new — they name the endpoints, the
 data layer, the roles and the deployment target.
 
-The retrieval stack, the 10-node LangGraph agent, the HTTP surface and the browser console are
+The retrieval stack, the 11-node LangGraph agent, the HTTP surface and the browser console are
 complete: `/health`, `/api/chat`, the admin-gated `/api/upload` and `/api/audit`, a SQLite audit
 log, and a single-page UI at `/` served from `templates/` and `static/`. Docker/DigitalOcean
 packaging is not built.
@@ -23,7 +23,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 214 tests, offline, no credentials needed
+pytest                                 # 227 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -433,9 +433,37 @@ keeping greetings *and questions about the assistant itself* on `direct`. An ear
 everything informational to `kb`; `"who are you?"` then retrieved nothing, fell through to web
 search, and answered from an unrelated web page. Re-test both classes after any edit to it.
 
-**`question` and `current_query` are deliberately separate in `AgentState`.** A rewrite replaces
-`current_query`; `question` keeps the employee's original wording for the final answer, citations
-and logs. Collapsing them loses what was actually asked.
+**Three question-shaped keys in `AgentState`, and each earns its place.** `question` is what the
+employee typed, verbatim, and never changes — it is what the audit log and the UI show.
+`standalone_question` is that question resolved against `history` by `contextualize`, and is what
+the router, the graders and generation all see. `current_query` is what retrieval runs: it starts as
+`standalone_question` and is what a rewrite replaces, repeatedly. Collapsing any pair loses
+something real — without the first the audit log records words nobody typed, without the second a
+follow-up retrieves nothing, without the third a rewrite would overwrite the question itself. Nodes
+read the middle one through `asked(state)`, never `state["question"]` directly; the two are the same
+string whenever there is no history, which is why single-turn behaviour is untouched by any of this.
+
+**`contextualize` runs on every question but only *spends* on a follow-up.** No history means no LLM
+call: paying a round trip to be told a standalone question is standalone would tax the common case
+to serve the rarer one. It is also why a first question writes no `Contextualiser` trace step, and
+why `graph.render` in `app.js` lights the node anyway — it ran, it just had nothing to do.
+
+**History is untrusted input in both senses.** It arrives over HTTP from a browser and is rendered
+straight into a prompt, so `normalise_history` drops anything malformed — a role nobody recognises
+(a `system` turn is the obvious thing to try), a missing or non-string `content` — and keeps only
+the last 8 turns. The cap is a cost control, not tidiness: every turn is rendered into the
+contextualise prompt on *every* follow-up, so an uncapped conversation gets more expensive the
+longer it runs. `ChatTurn`'s `Literal["user", "assistant"]` refuses the bad role at the HTTP edge
+as well, so the two layers agree.
+
+**Conversations live in the browser, not on the server.** `/api/chat` is deliberately open, so there
+is no identity a server-side conversation could be scoped to; an endpoint that listed them would
+either need auth this product does not have, or would let anyone read anyone else's HR questions.
+The client owns the thread and posts it back with each turn, and `Copilot` stays stateless — one
+process serves every employee, and holding one person's HR questions in it on behalf of someone
+else's request is not a thing to do by accident. `conversation_id` is written to the audit row so an
+admin can group a thread through `/api/audit`; it is not a key anything is fetched by. Do not add a
+`GET /api/conversations` without adding authentication first.
 
 **`trace` accumulates through a reducer; `citations` deliberately does not.** `trace` is
 `Annotated[list[str], add]`, and the reducer is load-bearing: a plain TypedDict key is *replaced* by
@@ -573,6 +601,15 @@ The key itself goes through `settings.check_admin_key`, never `==`.
 is HR-sensitive by definition, and is the reason the log is an endpoint behind a key rather than a
 file anyone with shell access can read. `audit_db_path`, `upload_dir` and `kb_dir` are settings so a
 container can mount them; `*.db` is gitignored.
+
+**Adding a column to the audit schema means adding it to `ADDED_COLUMNS` too.** `CREATE TABLE IF
+NOT EXISTS` does nothing to a table that already exists, so a database written by an earlier version
+keeps its old shape and every INSERT naming the new column fails — and `record()` swallows it, so
+the symptom is an audit log that silently stops growing, the one failure this store exists to
+prevent. `_migrate` adds anything missing, and it runs *between* the table script and the index
+script: an index cannot be built on a column that does not exist yet, and running them together
+fails on the index and takes the whole schema step with it.
+`test_an_older_audit_database_gains_the_new_columns` builds a pre-migration database and pins both.
 
 **`AuditStore.record` never raises.** A full disk, a locked database or a read-only mount degrades
 the audit trail, and that is much cheaper than turning a working answer into a 500. It returns

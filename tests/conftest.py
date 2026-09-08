@@ -39,11 +39,13 @@ class FakeLLM(Runnable):
         grades: Sequence[str] = ("good",),
         rewrite: str | None = None,
         fail: bool = False,
+        resolved: str | None = None,
     ) -> None:
         self.reply = reply
         self.route = route
         self.grades = list(grades)
         self.rewrite = rewrite
+        self.resolved = resolved
         self.fail = fail
         self.calls: list[str] = []
 
@@ -53,6 +55,13 @@ class FakeLLM(Runnable):
         if self.fail:
             raise RuntimeError("simulated provider outage")
         text = str(input)
+        # Checked first, and on a marker unique to the contextualise prompt.
+        # Both prompts open with the word "Rewrite", so matching that alone
+        # would hand the rewrite value to the contextualiser and quietly make
+        # every multi-turn test assert the wrong thing.
+        if "Conversation so far:" in text:
+            self.calls.append("contextualize")
+            return AIMessage(content=self.resolved if self.resolved else text)
         if self.rewrite is not None and "Rewrite" in text:
             return AIMessage(content=self.rewrite)
         return AIMessage(content=self.reply)

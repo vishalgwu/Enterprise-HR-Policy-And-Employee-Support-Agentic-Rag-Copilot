@@ -49,6 +49,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS chat_audit (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     asked_at        TEXT    NOT NULL,
+    conversation_id TEXT,
     question        TEXT    NOT NULL,
     answer          TEXT    NOT NULL,
     route           TEXT,
@@ -59,18 +60,53 @@ CREATE TABLE IF NOT EXISTS chat_audit (
     kb_chunks       INTEGER NOT NULL DEFAULT 0,
     retry_count     INTEGER NOT NULL DEFAULT 0,
     rewritten_query TEXT,
+    resolved_question TEXT,
     sources         TEXT    NOT NULL DEFAULT '[]',
     web_urls        TEXT    NOT NULL DEFAULT '[]',
     trace           TEXT    NOT NULL DEFAULT '[]',
     latency_ms      INTEGER
 );
+"""
+
+# Separate from SCHEMA, and applied *after* the migration, because an index can
+# only be built on a column that exists. On a database written before
+# `conversation_id` did, running these together fails on the index and takes the
+# whole schema step with it -- which `record()` then swallows, so the audit log
+# simply stops. The migration test pins the order.
+INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_chat_audit_asked_at ON chat_audit(asked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chat_audit_source ON chat_audit(source_used);
+CREATE INDEX IF NOT EXISTS idx_chat_audit_conv ON chat_audit(conversation_id);
 """
 
 # Columns holding a JSON array. Listed once so reading and writing cannot
 # disagree about which fields need decoding.
 JSON_COLUMNS = ("sources", "web_urls", "trace")
+
+# Columns added after the first release, as {name: SQL type}. `CREATE TABLE IF
+# NOT EXISTS` does nothing to a table that already exists, so a database written
+# by an earlier version keeps its old shape and every INSERT naming a new column
+# fails with "no such column". `record()` catches everything, so the symptom
+# would be an audit log that silently stopped growing -- the one failure mode
+# this store exists to prevent. Anything added to SCHEMA belongs here too.
+ADDED_COLUMNS = {
+    "conversation_id": "TEXT",
+    "resolved_question": "TEXT",
+}
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Add any column this version writes that an older database lacks.
+
+    Only ever additive: SQLite can add a nullable column to a populated table
+    cheaply, and existing rows get NULL, which is the honest value for "this
+    predates the column".
+    """
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(chat_audit)")}
+    for column, sql_type in ADDED_COLUMNS.items():
+        if column not in existing:
+            connection.execute(f"ALTER TABLE chat_audit ADD COLUMN {column} {sql_type}")
+            log.info("Audit database migrated: added column %s", column)
 
 
 class AuditStore:
@@ -101,6 +137,8 @@ class AuditStore:
                 # is cheap and idempotent, and this runs only until _ready.
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.executescript(SCHEMA)
+                _migrate(connection)
+                connection.executescript(INDEXES)
                 connection.commit()
                 self._ready = True
             yield connection
@@ -109,7 +147,10 @@ class AuditStore:
 
     # --- Writing -------------------------------------------------------------
     def record(
-        self, result: AnswerResult, latency_ms: int | None = None
+        self,
+        result: AnswerResult,
+        latency_ms: int | None = None,
+        conversation_id: str | None = None,
     ) -> int | None:
         """Store one answered question. Returns its id, or None if it failed.
 
@@ -122,13 +163,15 @@ class AuditStore:
                 cursor = connection.execute(
                     """
                     INSERT INTO chat_audit (
-                        asked_at, question, answer, route, source_used, grounded,
-                        kb_grade, web_grade, kb_chunks, retry_count,
-                        rewritten_query, sources, web_urls, trace, latency_ms
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        asked_at, conversation_id, question, answer, route,
+                        source_used, grounded, kb_grade, web_grade, kb_chunks,
+                        retry_count, rewritten_query, resolved_question,
+                        sources, web_urls, trace, latency_ms
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         datetime.now(UTC).isoformat(timespec="seconds"),
+                        conversation_id,
                         result.question,
                         result.answer,
                         result.route,
@@ -139,6 +182,7 @@ class AuditStore:
                         result.kb_chunks,
                         result.retry_count,
                         result.rewritten_query,
+                        result.resolved_question,
                         json.dumps([s.model_dump() for s in result.sources]),
                         json.dumps(result.web_urls),
                         json.dumps(result.trace),

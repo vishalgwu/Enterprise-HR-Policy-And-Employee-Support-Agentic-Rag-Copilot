@@ -12,6 +12,7 @@ config:
 ---
 graph TD;
 	__start__([<p>__start__</p>]):::first
+	contextualize(contextualize)
 	route_question(route_question)
 	retrieve_kb(retrieve_kb)
 	grade_kb_evidence(grade_kb_evidence)
@@ -23,7 +24,8 @@ graph TD;
 	direct_answer(direct_answer)
 	answer_insufficient(answer_insufficient)
 	__end__([<p>__end__</p>]):::last
-	__start__ --> route_question;
+	__start__ --> contextualize;
+	contextualize --> route_question;
 	grade_kb_evidence -.-> generate_from_kb;
 	grade_kb_evidence -.-> search_web;
 	grade_web_evidence -.-> answer_insufficient;

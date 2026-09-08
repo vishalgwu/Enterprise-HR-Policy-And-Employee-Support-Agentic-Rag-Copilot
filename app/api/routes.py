@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -154,15 +154,34 @@ def health(settings: Settings = Depends(get_settings_dep)) -> dict[str, Any]:
 # --- Chat --------------------------------------------------------------------
 
 
+class ChatTurn(BaseModel):
+    """One prior turn of the conversation, as the browser holds it."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=8000)
+
+
 class ChatRequest(BaseModel):
-    """One employee question.
+    """One employee question, optionally within a conversation.
 
     The upper bound is not tidiness: the question is embedded, then rendered
     into the router, grader and answer prompts, so its length is multiplied
-    across several billed calls before anything rejects it.
+    across several billed calls before anything rejects it. `history` is capped
+    for the same reason and again in `normalise_history` — it is rendered into
+    the contextualise prompt on every follow-up, so an uncapped conversation
+    gets more expensive the longer it runs.
+
+    **The client owns the conversation and sends it back.** The server keeps no
+    per-user chat state, because `/chat` is deliberately open — there is no
+    identity here to scope a stored conversation to, and holding one employee's
+    HR questions in a process that serves everyone is not a thing to do by
+    accident. `conversation_id` is recorded on the audit row so an admin can
+    group a thread; it is not a key anything is fetched by.
     """
 
     question: str = Field(min_length=2, max_length=3000)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=40)
+    conversation_id: str | None = Field(default=None, max_length=64)
 
 
 class ChatResponse(AnswerResult):
@@ -190,7 +209,10 @@ def chat(
     """
     started = time.perf_counter()
     try:
-        result = copilot.ask(payload.question)
+        result = copilot.ask(
+            payload.question,
+            history=[turn.model_dump() for turn in payload.history],
+        )
     except ValueError as exc:
         # An empty question after validation -- cheap to reject, and the message
         # is our own text, not a provider's.
@@ -204,7 +226,9 @@ def chat(
         ) from exc
 
     latency_ms = int((time.perf_counter() - started) * 1000)
-    audit_id = audit.record(result, latency_ms=latency_ms)
+    audit_id = audit.record(
+        result, latency_ms=latency_ms, conversation_id=payload.conversation_id
+    )
     return ChatResponse(**result.model_dump(), audit_id=audit_id)
 
 

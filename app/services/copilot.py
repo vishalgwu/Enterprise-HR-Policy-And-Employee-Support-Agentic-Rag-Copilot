@@ -47,6 +47,13 @@ class AnswerResult(BaseModel):
         default=None,
         description="Set only when a rewrite actually changed the query.",
     )
+    resolved_question: str | None = Field(
+        default=None,
+        description=(
+            "Set only when a follow-up was resolved against the conversation, "
+            "so the UI can show what the agent actually went looking for."
+        ),
+    )
     kb_grade: str | None = None
     web_grade: str | None = None
     kb_chunks: int = 0
@@ -74,13 +81,23 @@ def to_answer(state: AgentState | dict[str, Any]) -> AnswerResult:
     citations = state.get("citations")
     if citations is None:
         citations = cite_sources(kb_docs)
+    # Reported only when it actually differs, for the same reason
+    # `rewritten_query` is: a field that always echoes the question tells the UI
+    # nothing, and a field that is set only when something happened is a signal.
+    standalone = state.get("standalone_question")
+    baseline = standalone or question
     return AnswerResult(
         question=question,
         answer=(state.get("answer") or "").strip(),
         route=state.get("route"),
         source_used=state.get("source_used"),
         retry_count=state.get("retry_count", 0),
-        rewritten_query=current_query if current_query != question else None,
+        # Against the standalone question, not the original. `contextualize`
+        # already moved current_query once for a follow-up, and comparing with
+        # the employee's verbatim wording would report every follow-up as a
+        # rewrite that never happened.
+        rewritten_query=current_query if current_query != baseline else None,
+        resolved_question=standalone if standalone and standalone != question else None,
         kb_grade=state.get("kb_grade"),
         web_grade=state.get("web_grade"),
         kb_chunks=len(kb_docs),
@@ -119,9 +136,19 @@ class Copilot:
             )
         return self._graph
 
-    def ask(self, question: str) -> AnswerResult:
-        """Answer one question. Raises ValueError on an empty question."""
-        state = run_graph(question, graph=self.graph, verbose=self._verbose)
+    def ask(self, question: str, history: Any = None) -> AnswerResult:
+        """Answer one question. Raises ValueError on an empty question.
+
+        `history` is the conversation so far, oldest first, as
+        `{"role": ..., "content": ...}` turns. The Copilot itself is stateless
+        — the caller owns the conversation and hands back as much of it as it
+        wants resolved against. That is deliberate: one process serves every
+        employee, so holding conversations here would mean holding one person's
+        HR questions in memory on behalf of a request from someone else.
+        """
+        state = run_graph(
+            question, graph=self.graph, verbose=self._verbose, history=history
+        )
         return to_answer(state)
 
     def warmup(self) -> None:

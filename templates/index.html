@@ -150,9 +150,29 @@
           <!-- ── Inspector ────────────────────────────────────────────── -->
           <aside class="inspector" id="inspector">
             <div class="inspector__tabs" role="tablist">
+              <button class="tab" role="tab" data-tab="chats">Chats</button>
               <button class="tab is-active" role="tab" data-tab="graph">Workflow</button>
               <button class="tab" role="tab" data-tab="trace">Trace</button>
               <button class="tab" role="tab" data-tab="sources">Sources</button>
+            </div>
+
+            <!-- Conversations -------------------------------------------- -->
+            <div class="panel" id="panel-chats" role="tabpanel">
+              <div class="panel__head panel__head--row">
+                <div>
+                  <h3>Conversations</h3>
+                  <p>Kept in this browser only.</p>
+                </div>
+                <button class="btn btn--primary btn--sm" id="chat-new" title="Start a new conversation">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                  <span class="btn__label">New</span>
+                </button>
+              </div>
+              <div class="convos" id="convos"></div>
+              <p class="convos__note">
+                Follow-ups resolve against the conversation, so you can ask
+                “what about contractors?” after a question about dental cover.
+              </p>
             </div>
 
             <!-- Workflow ------------------------------------------------- -->
@@ -162,8 +182,8 @@
                 <p>The path this answer actually took.</p>
               </div>
 
-              <svg class="graph" id="graph" viewBox="0 0 400 500" role="img"
-                   aria-label="The ten-node agent graph, with the path taken highlighted">
+              <svg class="graph" id="graph" viewBox="0 0 400 545" role="img"
+                   aria-label="The eleven-node agent graph, with the path taken highlighted">
                 <defs>
                   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
                           markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -171,8 +191,24 @@
                   </marker>
                 </defs>
 
+                <!-- contextualize sits above the original shape. Rather than
+                     renumbering forty coordinates, the rest of the graph is
+                     translated down as one group and this node is drawn in the
+                     space that opens up. -->
                 <g class="graph__edges" fill="none" stroke-width="1.6" marker-end="url(#arrow)">
-                  <path data-edge="start-route"          d="M200 24 L200 43" />
+                  <path data-edge="start-contextualize" d="M200 19 L200 28" />
+                </g>
+                <g class="graph__nodes">
+                  <circle class="graph__start" cx="200" cy="12" r="5" />
+                  <g class="node" data-node="contextualize">
+                    <rect x="144" y="30" width="112" height="30" rx="15" />
+                    <text x="200" y="49">contextualize</text>
+                  </g>
+                </g>
+
+                <g transform="translate(0, 45)">
+                <g class="graph__edges" fill="none" stroke-width="1.6" marker-end="url(#arrow)">
+                  <path data-edge="contextualize-route" d="M200 24 L200 43" />
                   <path data-edge="route-direct"         d="M200 75 C200 100 76 96 76 107" />
                   <path data-edge="route-retrieve"       d="M200 75 C200 100 296 96 296 107" />
                   <path data-edge="retrieve-gradekb"     d="M296 139 L296 171" />
@@ -186,8 +222,6 @@
                 </g>
 
                 <g class="graph__nodes">
-                  <circle class="graph__start" cx="200" cy="18" r="5" />
-
                   <g class="node" data-node="route">
                     <rect x="144" y="45" width="112" height="30" rx="15" />
                     <text x="200" y="64">route</text>
@@ -228,6 +262,7 @@
                     <rect x="20" y="427" width="112" height="30" rx="15" />
                     <text x="76" y="446">no evidence</text>
                   </g>
+                </g>
                 </g>
               </svg>
 
