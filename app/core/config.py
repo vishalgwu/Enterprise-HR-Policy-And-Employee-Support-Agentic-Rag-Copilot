@@ -143,6 +143,26 @@ class Settings(BaseSettings):
     api_host: str = Field(default="0.0.0.0", validation_alias="API_HOST")
     api_port: int = Field(default=8000, validation_alias="API_PORT")
 
+    # --- Observability -------------------------------------------------------
+    # LangSmith tracing is declared here rather than left to the environment,
+    # because it has to be a decision rather than an accident. Tracing uploads
+    # every question and every retrieved chunk to LangChain's servers -- for
+    # this product that means employee HR questions and internal policy text
+    # leaving the deployment. Off unless explicitly switched on *and* keyed.
+    langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")
+    langsmith_api_key: str = Field(default="", validation_alias="LANGSMITH_API_KEY")
+    langsmith_endpoint: str = Field(
+        default="https://api.smith.langchain.com", validation_alias="LANGSMITH_ENDPOINT"
+    )
+    langsmith_project: str = Field(
+        default="hr-copilot", validation_alias="LANGSMITH_PROJECT"
+    )
+
+    @property
+    def tracing_enabled(self) -> bool:
+        """Tracing needs both the switch and a key; either alone does nothing."""
+        return bool(self.langsmith_tracing and self.langsmith_api_key.strip())
+
     # --- Paths ---------------------------------------------------------------
     @property
     def project_root(self) -> Path:
@@ -199,11 +219,16 @@ class Settings(BaseSettings):
             )
 
     def export_client_env(self) -> None:
-        """Publish secrets under the names third-party clients look for.
+        """Publish settings under the names third-party clients look for.
 
         ChatGroq, TavilySearch and Pinecone read these from the environment in
         their constructors rather than taking them as arguments, so they have to
         be in place before any client is built.
+
+        This is also the *only* thing that puts `.env` values into `os.environ`.
+        pydantic-settings reads the file without exporting it, unlike
+        `load_dotenv()`. Anything a third-party library discovers through the
+        environment has to be listed here or it silently does nothing.
         """
         for field, env_name in (
             ("groq_api_key", "GROQ_API_KEY"),
@@ -214,6 +239,19 @@ class Settings(BaseSettings):
             if value:
                 os.environ[env_name] = value
         os.environ.setdefault("USER_AGENT", self.user_agent)
+
+        # LangChain discovers tracing purely through the environment. Exported
+        # only when switched on and keyed, so a stray key cannot start shipping
+        # employee questions to a third party on its own.
+        if self.tracing_enabled:
+            os.environ["LANGSMITH_TRACING"] = "true"
+            os.environ["LANGCHAIN_TRACING_V2"] = "true"  # older SDKs read this
+            os.environ["LANGSMITH_API_KEY"] = self.langsmith_api_key.strip()
+            os.environ["LANGSMITH_ENDPOINT"] = self.langsmith_endpoint
+            os.environ["LANGSMITH_PROJECT"] = self.langsmith_project
+        else:
+            for name in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
+                os.environ.pop(name, None)
 
 
 @lru_cache(maxsize=1)

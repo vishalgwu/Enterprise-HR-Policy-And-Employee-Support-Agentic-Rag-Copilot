@@ -53,6 +53,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "private_namespace": settings.private_namespace,
             "embedding_model": settings.embedding_model,
             "groq_model": settings.groq_model,
+            # Reported because tracing sends questions and retrieved policy text
+            # off the deployment; whether it is on should be visible, not
+            # inferred from a config file nobody reads in production.
+            "tracing": settings.tracing_enabled,
         }
 
     return api

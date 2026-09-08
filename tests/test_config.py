@@ -58,11 +58,88 @@ def test_export_client_env_does_not_blank_an_existing_value():
     assert os.environ["GROQ_API_KEY"] == "already-set"
 
 
+def _clear_tracing_env():
+    for name in (
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGSMITH_PROJECT",
+    ):
+        os.environ.pop(name, None)
+
+
+def test_tracing_is_off_by_default(monkeypatch):
+    """It uploads employee questions, so it must be a decision, not a default.
+
+    Isolated from both sources a real process has: the developer's `.env`
+    (`_env_file=None`) and `os.environ`, which `export_client_env` has already
+    written to at import. Environment outranks the file, so clearing only one of
+    them still reads local configuration and the test would pass or fail by
+    machine rather than by behaviour.
+    """
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    assert not Settings(_env_file=None).tracing_enabled
+
+
+def test_tracing_needs_both_the_switch_and_a_key():
+    assert not Settings(LANGSMITH_TRACING=True, LANGSMITH_API_KEY="").tracing_enabled
+    assert not Settings(LANGSMITH_TRACING=False, LANGSMITH_API_KEY="k").tracing_enabled
+    assert Settings(LANGSMITH_TRACING=True, LANGSMITH_API_KEY="k").tracing_enabled
+
+
+def test_enabled_tracing_reaches_the_environment_langchain_reads():
+    """pydantic-settings reads .env without exporting it, unlike load_dotenv.
+
+    LangChain discovers tracing only through os.environ, so a var that is not
+    exported here does nothing at all.
+    """
+    _clear_tracing_env()
+    Settings(
+        LANGSMITH_TRACING=True, LANGSMITH_API_KEY="k", LANGSMITH_PROJECT="proj"
+    ).export_client_env()
+    assert os.environ["LANGSMITH_TRACING"] == "true"
+    assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+    assert os.environ["LANGSMITH_API_KEY"] == "k"
+    assert os.environ["LANGSMITH_PROJECT"] == "proj"
+    _clear_tracing_env()
+
+
+def test_disabled_tracing_clears_a_switch_left_in_the_environment():
+    """A stray key must not start shipping questions to a third party."""
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    Settings(LANGSMITH_TRACING=False).export_client_env()
+    assert "LANGSMITH_TRACING" not in os.environ
+    assert "LANGCHAIN_TRACING_V2" not in os.environ
+
+
 def test_namespaces_are_explicit_strings():
     """The Pinecone default namespace ("") behaves inconsistently across calls."""
-    s = Settings()
+    s = Settings(_env_file=None)
     assert s.private_namespace and s.public_namespace
     assert s.private_namespace != s.public_namespace
+
+
+def test_defaults_match_the_reference_architecture():
+    """docs/architecture.png names these; a local .env may override them."""
+    s = Settings(_env_file=None)
+    assert s.pinecone_index == "peopleprime-hr-kb"
+    assert s.private_namespace == "hr-docs"
+
+
+def test_exported_settings_feed_back_into_a_later_settings_object(monkeypatch):
+    """export_client_env writes os.environ, which outranks the .env file.
+
+    Worth pinning: it means a Settings built after an export sees the exported
+    value, not the file's. Consistent in a process, surprising in a test.
+    """
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    Settings(
+        _env_file=None, LANGSMITH_TRACING=True, LANGSMITH_API_KEY="k"
+    ).export_client_env()
+    assert Settings(_env_file=None).langsmith_tracing is True
 
 
 def test_settings_are_immutable():

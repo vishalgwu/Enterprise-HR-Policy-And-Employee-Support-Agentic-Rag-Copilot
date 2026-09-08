@@ -126,6 +126,31 @@ def kb_doc(
     )
 
 
+TRACING_VARS = (
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_API_KEY",
+    "LANGSMITH_ENDPOINT",
+    "LANGSMITH_PROJECT",
+)
+
+
+@pytest.fixture(autouse=True)
+def no_tracing(monkeypatch):
+    """Guarantee the suite never phones home, whatever the developer's .env says.
+
+    Without this the suite is offline only by accident. `app.core.config` exports
+    tracing into `os.environ` at import, so on a machine with LangSmith enabled
+    every graph test uploads its run — turning a unit test into a network call
+    and shipping fake HR content to a third party.
+
+    monkeypatch restores the original value on teardown, so this also contains
+    any test that switches tracing on deliberately.
+    """
+    for name in TRACING_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.fixture
 def settings() -> Settings:
     """Settings that never reach a real service."""

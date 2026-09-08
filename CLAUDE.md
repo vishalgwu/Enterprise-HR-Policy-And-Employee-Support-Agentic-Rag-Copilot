@@ -82,6 +82,23 @@ and Pinecone read *in their constructors*, plus the `USER_AGENT` that `WebBaseLo
 Every client module imports its settings from here, which is what guarantees the ordering. Do not
 construct a client before importing config, and do not move the export.
 
+**pydantic-settings reads `.env` but does not export it, unlike `load_dotenv()`.** This bit once:
+switching to `SettingsConfigDict(env_file=...)` silently killed LangSmith tracing, because the old
+`load_dotenv()` had been pushing `LANGSMITH_TRACING` into `os.environ` where LangChain finds it, and
+the new loader does not. **Any variable a third-party library discovers through the environment must
+be an explicit field plus an explicit export in `export_client_env()`, or it does nothing at all** —
+and it fails silently, because a library that finds no variable simply stays off.
+
+**LangSmith tracing is off unless switched on *and* keyed, and `export_client_env` actively clears
+the switch when it is off.** Tracing uploads every question and every retrieved chunk to LangChain's
+servers — for an HR copilot that is employee questions and internal policy leaving the deployment.
+It must be a decision, not something a stray key in the environment turns on. `/health` reports
+`tracing` so a running deployment shows it rather than hiding it in a file.
+
+**Nothing here uses OpenAI.** `.env` carries a lowercase `openai_api` key that no module reads;
+it is deliberately lowercase so no library picks it up as `OPENAI_API_KEY`. Do not "normalise" that
+name — `langchain-openai` is installed (as a `langchain-pinecone` dependency) and would find it.
+
 **Write `.gitignore` as UTF-8 and verify the bytes.** Editors on this machine have twice saved it
 as UTF-16, which git cannot parse — it silently ignores nothing, and `.env` shows up as untracked
 rather than ignored. Check with `git check-ignore -v .env`; if it prints nothing the file is broken
@@ -282,6 +299,17 @@ hyphens and smart quotes models emit — the API call succeeds and `print()` is 
 `.env`. That is only possible because every layer takes its clients as arguments, and
 `tests/conftest.py` supplies `FakeLLM`, `FakeRetriever` and `FakeWebSearch`. If a change makes a
 test need the network, the change broke the injection, not the test.
+
+**The `no_tracing` autouse fixture is part of that guarantee, not tidiness.** Without it the suite
+is offline only by accident: `app.core.config` exports tracing into `os.environ` at import, so on a
+machine with LangSmith enabled every graph test uploads its run — observed, complete with
+`403 Forbidden` noise in the output. Do not remove it.
+
+**A test asserting a default must isolate from *both* config sources.** `Settings()` reads
+`os.environ` first and `.env` second, and `export_client_env` has already written to `os.environ` by
+the time any test runs. `_env_file=None` alone is not enough — it silences the file and leaves the
+environment, so the test still reads local configuration and passes or fails by machine. Use
+`monkeypatch.delenv` as well; `test_tracing_is_off_by_default` is the worked example.
 
 `pyproject.toml` sets `pythonpath = [".", "tests"]`, which is how `tests/test_graph.py` imports
 `conftest` directly. Do **not** add `tests/__init__.py` — it turns the directory into a package and
