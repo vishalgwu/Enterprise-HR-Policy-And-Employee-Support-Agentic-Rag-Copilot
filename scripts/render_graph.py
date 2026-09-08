@@ -16,7 +16,7 @@ if __package__ in (None, ""):  # allow `python scripts/render_graph.py`
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import sys
+import argparse
 
 from langchain_core.runnables import Runnable
 
@@ -43,11 +43,21 @@ def main() -> None:
     configure_stdout()
     configure_logging()
 
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--png",
+        action="store_true",
+        help="render a PNG instead -- posts the graph to the public mermaid.ink",
+    )
+    args = parser.parse_args()
+
     graph = build_graph(
         llm=_Unused(), retriever=_Unused(), web_search=_Unused(), verbose=False
     )
 
-    if "--png" in sys.argv:
+    if args.png:
         print(f"Wrote {save_graph_png(graph=graph)}")
         return
 

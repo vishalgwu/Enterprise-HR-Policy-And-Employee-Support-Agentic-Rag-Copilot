@@ -7,7 +7,7 @@ corpus lives in and no caller has to remember.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from langchain_core.documents import Document
 
@@ -71,9 +71,9 @@ def get_public_retriever(
 
 def build_filter(
     department: str | None = None, doc_type: str | None = None
-) -> Dict[str, Any] | None:
+) -> dict[str, Any] | None:
     """Compose a Pinecone metadata filter, or None when nothing is constrained."""
-    clauses: Dict[str, Any] = {}
+    clauses: dict[str, Any] = {}
     if department:
         clauses["department"] = {"$eq": department}
     if doc_type:
@@ -88,7 +88,7 @@ def retrieve_with_scores(
     department: str | None = None,
     doc_type: str | None = None,
     settings: Settings | None = None,
-) -> List[Tuple[Document, float]]:
+) -> list[tuple[Document, float]]:
     """Top-k private-KB chunks with raw cosine scores, ungated.
 
     The diagnostic behind the gate: these are the numbers `relevance_threshold`
@@ -104,27 +104,10 @@ def retrieve_with_scores(
         settings=settings,
     )
 
-
-def retrieve_relevant(
-    question: str,
-    k: int | None = None,
-    score_threshold: float | None = None,
-    embedding: Any = None,
-    settings: Settings | None = None,
-) -> List[Tuple[Document, float]]:
-    """Private-KB chunks above the raw-cosine gate, as (document, score) pairs.
-
-    An empty list means nothing in the KB is close enough to the question -- the
-    signal for the agent to rewrite the query or fall back to web search.
-    """
-    settings = settings or get_settings()
-    threshold = (
-        settings.relevance_threshold if score_threshold is None else score_threshold
-    )
-    return [
-        (doc, score)
-        for doc, score in retrieve_with_scores(
-            question, k=k, embedding=embedding, settings=settings
-        )
-        if score >= threshold
-    ]
+# There is deliberately no `retrieve_relevant()` here. Filtering
+# `retrieve_with_scores` by `relevance_threshold` in Python is a second, weaker
+# implementation of the gate `get_kb_retriever` already applies inside Pinecone:
+# it re-ranks only the k rows that came back rather than gating the search, and
+# it silently loses the `department` / `doc_type` filters its sibling accepts.
+# Use `get_kb_retriever()` to retrieve, and `retrieve_with_scores()` to see the
+# ungated numbers the gate is tuned from.

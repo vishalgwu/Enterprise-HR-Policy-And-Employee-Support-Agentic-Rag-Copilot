@@ -13,7 +13,7 @@ embedding model and re-establish every client on every message.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -40,18 +40,18 @@ class AnswerResult(BaseModel):
 
     question: str
     answer: str
-    route: Optional[str] = None
-    source_used: Optional[str] = None
+    route: str | None = None
+    source_used: str | None = None
     retry_count: int = 0
-    rewritten_query: Optional[str] = Field(
+    rewritten_query: str | None = Field(
         default=None,
         description="Set only when a rewrite actually changed the query.",
     )
-    kb_grade: Optional[str] = None
-    web_grade: Optional[str] = None
+    kb_grade: str | None = None
+    web_grade: str | None = None
     kb_chunks: int = 0
-    sources: List[SourceRef] = Field(default_factory=list)
-    web_urls: List[str] = Field(default_factory=list)
+    sources: list[SourceRef] = Field(default_factory=list)
+    web_urls: list[str] = Field(default_factory=list)
 
     @property
     def grounded(self) -> bool:
@@ -59,7 +59,7 @@ class AnswerResult(BaseModel):
         return self.source_used in ("private_kb", "web_search")
 
 
-def to_answer(state: AgentState | Dict[str, Any]) -> AnswerResult:
+def to_answer(state: AgentState | dict[str, Any]) -> AnswerResult:
     """Project the graph's final state onto the API contract."""
     kb_docs = state.get("kb_docs") or []
     question = state.get("question", "")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from conftest import FakeLLM, FakeRetriever, FakeWebSearch, kb_doc
+from langchain_core.messages import AIMessage
 
 from app.agent.graph import BRANCHES, ask, build_graph
 from app.agent.nodes import NODE_NAMES, TERMINAL_NODES
@@ -137,6 +138,29 @@ def test_a_total_provider_outage_still_returns_an_answer():
     state = run(FakeLLM(fail=True), FakeRetriever([]), FakeWebSearch())
     assert state["source_used"] == "insufficient_evidence"
     assert state["answer"].strip()
+
+
+def test_a_reply_of_content_blocks_does_not_abort_the_run():
+    """`.content` may be a list, and `.strip()` on a list raises.
+
+    That AttributeError used to escape the node, and a node that raises kills
+    the whole graph -- so a provider shape change would have cost every answer
+    rather than degrading one.
+    """
+
+    class _BlockReply(FakeLLM):
+        def invoke(self, input, config=None, **kwargs):
+            return AIMessage(
+                content=[{"type": "text", "text": "Twenty days of PTO."}]
+            )
+
+    state = run(
+        _BlockReply(route="kb", grades=["good"]),
+        FakeRetriever([kb_doc()]),
+        FakeWebSearch(),
+    )
+    assert state["source_used"] == "private_kb"
+    assert state["answer"] == "Twenty days of PTO."
 
 
 def test_a_generation_failure_is_reported_not_swallowed():

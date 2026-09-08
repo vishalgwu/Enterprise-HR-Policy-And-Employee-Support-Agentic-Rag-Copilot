@@ -29,7 +29,9 @@ def main() -> None:
     configure_logging()
     settings = get_settings()
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--dir", default=None, help="source directory")
     parser.add_argument(
         "--namespace", default=None, help="target namespace (default: PRIVATE_NAMESPACE)"
@@ -50,8 +52,11 @@ def main() -> None:
     embeddings = get_embeddings()
     dim = embedding_dimension(embeddings)
     if dim != settings.embedding_dim:
+        # active_embedding_model, not embedding_model: the latter is the
+        # HuggingFace model regardless of provider, so naming it here would
+        # misdirect anyone running EMBEDDING_PROVIDER=openai.
         raise SystemExit(
-            f"{settings.embedding_model} returned {dim}-d vectors but "
+            f"{settings.active_embedding_model} returned {dim}-d vectors but "
             f"embedding_dim is {settings.embedding_dim}. Update EMBEDDING_DIM "
             f"and point PINECONE_INDEX at a fresh name -- Pinecone cannot "
             f"resize an index."

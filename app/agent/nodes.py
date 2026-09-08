@@ -17,7 +17,8 @@ answer.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 from app.agent.decisions import get_evidence_grader, get_router, grade_evidence
 from app.agent.decisions import route_question as classify_route
@@ -36,6 +37,7 @@ from app.rag.clients import (
     get_llm,
     get_web_search,
     is_rate_limit,
+    message_text,
     web_result_urls,
     web_results_to_text,
 )
@@ -75,7 +77,7 @@ def build_nodes(
     embedding: Any = None,
     verbose: bool = True,
     settings: Settings | None = None,
-) -> Dict[str, Callable]:
+) -> dict[str, Callable]:
     """Construct every node once, closed over shared clients.
 
     Each dependency is injectable and each is built only if not supplied, so a
@@ -119,7 +121,7 @@ def build_nodes(
             return fallback
 
     # --- 1. Route ------------------------------------------------------------
-    def route_question(state: AgentState) -> Dict[str, Any]:
+    def route_question(state: AgentState) -> dict[str, Any]:
         question = state["question"]
         # classify_route survives a Groq tool_use_failed 400, which the router
         # hits often enough to matter: it is on the path of every question.
@@ -131,7 +133,7 @@ def build_nodes(
         return "retrieve_kb" if state.get("route") == "kb" else "direct_answer"
 
     # --- 2. Retrieve from the private KB -------------------------------------
-    def retrieve_kb(state: AgentState) -> Dict[str, Any]:
+    def retrieve_kb(state: AgentState) -> dict[str, Any]:
         query = state["current_query"]
         # A Pinecone outage degrades to "no evidence", which routes to the web
         # fallback -- the same path a genuinely empty retrieval takes.
@@ -140,7 +142,7 @@ def build_nodes(
         return {"kb_docs": docs}
 
     # --- 3. Grade private KB evidence ----------------------------------------
-    def grade_kb_evidence(state: AgentState) -> Dict[str, Any]:
+    def grade_kb_evidence(state: AgentState) -> dict[str, Any]:
         docs = state.get("kb_docs") or []
         # The similarity gate already returns nothing for out-of-domain
         # questions; grading an empty context would just spend a call to be told
@@ -159,7 +161,7 @@ def build_nodes(
         return "generate_from_kb" if state.get("kb_grade") == "good" else "search_web"
 
     # --- 4. Tavily web search fallback ---------------------------------------
-    def search_web(state: AgentState) -> Dict[str, Any]:
+    def search_web(state: AgentState) -> dict[str, Any]:
         query = state["current_query"]
         log("Tavily", f"searching {query!r}")
         # This node is itself the fallback, so it needs one of its own: a Tavily
@@ -171,7 +173,7 @@ def build_nodes(
         return {"web_results": web_text, "web_urls": web_result_urls(raw)}
 
     # --- 5. Grade web evidence -----------------------------------------------
-    def grade_web_evidence(state: AgentState) -> Dict[str, Any]:
+    def grade_web_evidence(state: AgentState) -> dict[str, Any]:
         web_results = state.get("web_results") or ""
         if not web_results.strip():
             log("Web Grader", "weak (search returned nothing)")
@@ -191,15 +193,15 @@ def build_nodes(
         return "answer_insufficient"
 
     # --- 6. Rewrite the query ------------------------------------------------
-    def rewrite_query(state: AgentState) -> Dict[str, Any]:
+    def rewrite_query(state: AgentState) -> dict[str, Any]:
         # Rewrite from the original wording, not from an earlier rewrite, so
         # successive attempts cannot drift away from what was asked.
         question = state["question"]
         rewritten = guard(
             "Rewriter",
-            lambda: (REWRITE_PROMPT | llm).invoke({"question": question}).content.strip(),
+            lambda: message_text((REWRITE_PROMPT | llm).invoke({"question": question})),
             question,
-        )
+        ).strip()
         # An empty rewrite would retrieve nothing at all; keep the original.
         rewritten = rewritten or question
         log("Rewriter", rewritten)
@@ -212,15 +214,15 @@ def build_nodes(
 
     # --- 7/8/9. Generation ---------------------------------------------------
     def _generate(
-        tag: str, prompt: Any, variables: Dict[str, Any], source_used: str
-    ) -> Dict[str, Any]:
+        tag: str, prompt: Any, variables: dict[str, Any], source_used: str
+    ) -> dict[str, Any]:
         """Render one answer, reporting an honest failure rather than raising."""
-        answer = guard(tag, lambda: (prompt | llm).invoke(variables).content, None)
-        if not answer or not answer.strip():
+        answer = guard(tag, lambda: message_text((prompt | llm).invoke(variables)), "")
+        if not answer.strip():
             return {"answer": GENERATION_FAILED, "source_used": "error"}
         return {"answer": answer, "source_used": source_used}
 
-    def generate_from_kb(state: AgentState) -> Dict[str, Any]:
+    def generate_from_kb(state: AgentState) -> dict[str, Any]:
         return _generate(
             "Generate/KB",
             KB_ANSWER_PROMPT,
@@ -231,7 +233,7 @@ def build_nodes(
             "private_kb",
         )
 
-    def generate_from_web(state: AgentState) -> Dict[str, Any]:
+    def generate_from_web(state: AgentState) -> dict[str, Any]:
         return _generate(
             "Generate/Web",
             WEB_ANSWER_PROMPT,
@@ -239,7 +241,7 @@ def build_nodes(
             "web_search",
         )
 
-    def direct_answer(state: AgentState) -> Dict[str, Any]:
+    def direct_answer(state: AgentState) -> dict[str, Any]:
         return _generate(
             "Generate/Direct",
             DIRECT_ANSWER_PROMPT,
@@ -248,7 +250,7 @@ def build_nodes(
         )
 
     # --- 10. Insufficient evidence -------------------------------------------
-    def answer_insufficient(state: AgentState) -> Dict[str, Any]:
+    def answer_insufficient(state: AgentState) -> dict[str, Any]:
         log("Fallback", "no sufficient evidence in KB or web")
         return {
             "answer": INSUFFICIENT_ANSWER,

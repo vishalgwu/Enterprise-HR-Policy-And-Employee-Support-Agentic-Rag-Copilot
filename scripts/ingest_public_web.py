@@ -34,7 +34,9 @@ def main() -> None:
     configure_logging()
     settings = get_settings()
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--url", default=HR_POLICY_URL)
     parser.add_argument(
         "--content-class",

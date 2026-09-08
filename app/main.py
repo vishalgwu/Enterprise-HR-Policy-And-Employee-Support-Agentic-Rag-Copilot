@@ -6,14 +6,24 @@ brief calls for -- /chat, /upload, /ingest, /feedback, /admin, /logs -- are the
 next milestone and belong in `app.api`, each router calling `app.services`
 rather than the agent directly.
 
-An app *factory* rather than a module-level `app`, so tests can build an
-instance with different settings. `run.py` and uvicorn use `app.main:create_app`
-with `--factory`.
+Both an app *factory* and a module-level instance, and both are needed:
+
+    create_app(settings)   builds an instance over any Settings, which is what
+                           lets tests exercise production behaviour (docs
+                           withheld, admin off) without touching the process
+                           environment. `run.py` uses it with `--factory`.
+    app                    the conventional ASGI target, so `uvicorn
+                           app.main:app` in a Dockerfile or on a platform that
+                           does not know about factories still works.
+
+`app` is built at import, so importing this module reads settings and attaches
+the log handler. That is correct for an entry-point module and wrong for a
+library one -- which is why nothing under `app.rag` or `app.agent` does it.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -41,7 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     @api.get("/health", tags=["ops"])
-    def health() -> Dict[str, Any]:
+    def health() -> dict[str, Any]:
         """Liveness plus a configuration summary.
 
         Reports which credentials are *missing* by name and never echoes a
@@ -81,4 +91,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return api
 
 
+# The ASGI target for `uvicorn app.main:app`, `gunicorn -k uvicorn.workers...`
+# and every platform that expects a module-level application. Tests and run.py
+# call create_app() instead -- see the module docstring.
 app = create_app()

@@ -142,6 +142,29 @@ def is_rate_limit(exc: BaseException) -> bool:
     )
 
 
+def message_text(message: Any) -> str:
+    """Flatten a chat model's reply to plain text.
+
+    `.content` is a plain string for Groq and OpenAI today, but the message
+    interface allows a list of content blocks and providers do return one. The
+    graph must not depend on which: `"".strip()` on a list raises
+    AttributeError, and a node that raises aborts the entire run. This is the
+    same adapter role `web_results_to_text` plays for Tavily -- one place that
+    absorbs a provider's response shape so nothing downstream has to.
+    """
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        # Content blocks are dicts like {"type": "text", "text": "..."}; keep
+        # only the text parts, since an image block has nothing to contribute.
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return "" if content is None else str(content)
+
+
 def web_results_to_text(result: Any) -> str:
     """Flatten a Tavily response into text a grader and a prompt can consume.
 

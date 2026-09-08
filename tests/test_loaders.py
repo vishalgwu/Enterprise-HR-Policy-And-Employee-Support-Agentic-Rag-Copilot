@@ -19,7 +19,6 @@ from app.rag.loaders import (
     split_documents,
 )
 
-
 # --- Chunk identity ----------------------------------------------------------
 
 
@@ -107,7 +106,8 @@ def test_subdirectory_becomes_the_department(tmp_path):
     (tmp_path / "payroll" / "bonus.md").write_text("# Bonus", encoding="utf-8")
     (tmp_path / "handbook.md").write_text("# Handbook", encoding="utf-8")
 
-    by_source = {d.metadata["source"]: d for d in load_directory(tmp_path, origin="hr-docs")}
+    loaded = load_directory(tmp_path, origin="hr-docs")
+    by_source = {d.metadata["source"]: d for d in loaded}
     assert by_source["bonus.md"].metadata["department"] == "payroll"
     assert by_source["handbook.md"].metadata["department"] == "general"
 

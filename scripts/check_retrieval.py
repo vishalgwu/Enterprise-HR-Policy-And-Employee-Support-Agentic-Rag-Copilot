@@ -36,7 +36,9 @@ def main() -> None:
     configure_logging()
     settings = get_settings()
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
     parser.add_argument("--department", default=None)
     parser.add_argument("--doc-type", default=None)

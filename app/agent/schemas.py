@@ -15,11 +15,11 @@ works too.
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import Literal, NotRequired
 
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 Route = Literal["kb", "direct"]
 Grade = Literal["good", "weak"]
@@ -73,9 +73,9 @@ class AgentState(TypedDict):
     current_query: str
     retry_count: int
     route: NotRequired[Route]
-    kb_docs: NotRequired[List[Document]]
+    kb_docs: NotRequired[list[Document]]
     web_results: NotRequired[str]
-    web_urls: NotRequired[List[str]]
+    web_urls: NotRequired[list[str]]
     kb_grade: NotRequired[Grade]
     web_grade: NotRequired[Grade]
     answer: NotRequired[str]

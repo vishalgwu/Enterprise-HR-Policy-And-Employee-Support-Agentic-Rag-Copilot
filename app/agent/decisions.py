@@ -19,7 +19,7 @@ Graph nodes must call `route_question` / `grade_evidence` from this module, not
 
 from __future__ import annotations
 
-from typing import Any, Tuple
+from typing import Any
 
 from app.agent.prompts import GRADER_PROMPT, ROUTER_PROMPT
 from app.agent.schemas import EvidenceGrade, Grade, Route, RouteDecision
@@ -28,8 +28,8 @@ from app.rag.clients import get_llm, is_rate_limit
 
 log = get_logger("decisions")
 
-ROUTE_VALUES: Tuple[str, ...] = ("kb", "direct")
-GRADE_VALUES: Tuple[str, ...] = ("good", "weak")
+ROUTE_VALUES: tuple[str, ...] = ("kb", "direct")
+GRADE_VALUES: tuple[str, ...] = ("good", "weak")
 
 
 def get_router(llm: Any = None):
@@ -54,7 +54,7 @@ def failed_generation(exc: BaseException) -> str | None:
     return None
 
 
-def coerce(text: str | None, allowed: Tuple[str, ...]) -> str | None:
+def coerce(text: str | None, allowed: tuple[str, ...]) -> str | None:
     """Match loose model text against an enum.
 
     Handles 'direct', '"direct"', and {"route": "direct"}. Falls back to
@@ -72,7 +72,7 @@ def coerce(text: str | None, allowed: Tuple[str, ...]) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
-def _recover(exc: BaseException, allowed: Tuple[str, ...], tag: str, default: str) -> str:
+def _recover(exc: BaseException, allowed: tuple[str, ...], tag: str, default: str) -> str:
     recovered = coerce(failed_generation(exc), allowed)
     if recovered:
         log.debug("[%s] recovered %r from a failed structured call", tag, recovered)

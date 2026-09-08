@@ -24,7 +24,8 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | LangGraph agent (10 nodes: route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 122 tests, no network, no credentials | Implemented |
+| Test suite — 144 tests, no network, no credentials | Implemented |
+| Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
 | FastAPI service | `/health` only; `/chat`, `/upload`, `/ingest`, `/feedback`, `/admin`, `/logs` not yet built |
@@ -390,10 +391,16 @@ python scripts/ingest_public_web.py   # scrape the public article -> "public-web
 python scripts/demo.py                # four demos, one per path
 python scripts/demo.py 2              # just demo 2
 python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
+python scripts/inspect_document.py    # load + chunk one file, offline, no keys
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API on :8000
-pytest                                # 122 tests, no network, no credentials
+
+pytest                                # 144 tests, no network, no credentials
+python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
+
+Every script supports `--help`, and none of them touches a provider to print it — argument parsing
+happens before `validate_required()`, so `--help` works in a fresh checkout with no `.env`.
 
 Ask a single question:
 
@@ -460,10 +467,13 @@ app/agent/diagram.py      render the compiled graph
 app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
 app/api/                  FastAPI routers (only /health so far, in app/main.py)
 
+app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
+
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    122 tests over fakes -- no network, no credentials
+tests/                    144 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
+                          the only corpus on disk, deliberately -- see below
 step.md                   the 16-step build plan this project is working through
 docs/                     the reference brief, target architecture, generated graph
 req.txt                   pinned dependencies (requirements.txt forwards to it)
@@ -574,6 +584,56 @@ be imported by the planned FastAPI and LangGraph layers without doing work.
 **Unbounded readiness loop bounded.** Waiting for index readiness had no timeout and could hang
 forever; it is now capped and raises.
 
+**A reply of content blocks aborted the whole run.** `_generate` called `.content` inside the guard
+but `.strip()` outside it. `.content` is a plain string on Groq and OpenAI, but the message
+interface allows a list of content blocks — and `.strip()` on a list raises `AttributeError`, which
+escaped the node and killed the run. The one invariant every node has is that it degrades rather
+than raises, so a provider shape change would have cost *every* answer instead of one. Flattening
+now happens in `message_text` inside the guard, and
+`test_a_reply_of_content_blocks_does_not_abort_the_run` fails against the old code with exactly
+that AttributeError.
+
+**`ensure_index` would have created an unrecoverable index.** `embedding_dim` is `0` when
+`EMBEDDING_DIM` is unset and the model is not in `KNOWN_EMBEDDING_DIMS`. `validate_embedding()`
+says so clearly, but only entry points call it — an `/ingest` request reaches `ensure_index`
+directly, and Pinecone cannot resize an index, so a 0-d one has to be dropped and recreated under a
+new name. It now refuses at the last point that can still name the cause.
+
+**`scripts/demo.py --help` ran the demos.** It read `sys.argv` by hand, so `--help` matched nothing,
+was ignored, and four live Groq, Pinecone and Tavily round trips went out to someone who asked what
+the flags were. Every script now parses arguments with `argparse` before `validate_required()`, so
+`--help` is free and works without credentials.
+
+**A second retrieval helper was quietly weaker than the first.** `retrieve_relevant()` filtered
+`retrieve_with_scores` by `relevance_threshold` in Python — a re-implementation of the gate
+`get_kb_retriever` already applies inside Pinecone, except that it re-ranked only the `k` rows that
+came back rather than gating the search, and silently dropped the `department` / `doc_type` filters
+its sibling accepts. It had no callers. Deleted, with a comment where it was so it does not come
+back.
+
+**The ingest script named the wrong model.** Its dimension-mismatch error printed
+`settings.embedding_model`, which is the HuggingFace model whichever provider is configured — so
+the message misdirected precisely the person running `EMBEDDING_PROVIDER=openai`, the case the
+check exists for. It reports `active_embedding_model` now.
+
+**The one global nobody imports is load-bearing.** `settings = get_settings()` at the foot of
+`config.py` has no readers, and its comment used to say callers should not use it — which reads
+exactly like dead code. It is the single call that runs `export_client_env()` on import, and that
+is what puts `GROQ_API_KEY` / `TAVILY_API_KEY` / `PINECONE_API_KEY` in the environment before any
+client constructor reads them. Deleting it as an unused global would break every provider at once,
+silently. The comment now says so.
+
+**The client adapters had no tests.** `is_rate_limit`, `web_results_to_text` and `web_result_urls`
+were untested, and `is_rate_limit` is what keeps an exhausted Groq quota from being read as a
+knowledge gap — every safe default in the graph is `weak`, so without it a dead quota and an
+uncovered question are indistinguishable in the logs. `tests/test_clients.py` covers all of them.
+
+**The lint config was aspirational.** `pyproject.toml` had carried a `ruff` section that nothing
+ran; the first run reported 109 findings. All were stylistic (`typing.List` → `list`, import
+order), none were bugs, and the tree passes with zero findings now. `ruff` is pinned in `req.txt`,
+because a minor release adds rules and a gate that starts failing on an unchanged tree is one
+people learn to ignore.
+
 ---
 
 ## Roadmap
@@ -587,10 +647,17 @@ Two deliberate deviations from step.md, both already in the code:
   (no per-query cost, no employee question leaving the machine at embed time) and Groq for
   generation and grading. `openai` and `langchain-openai` are installed only because
   `langchain-pinecone` requires them; nothing imports them.
-- **Module paths.** The plan puts ingestion in `app/services/ingestion.py`, state in
-  `app/rag/state.py` and the workflow in `app/rag/workflow.py`. They live in `app/rag/ingest.py`,
-  `app/agent/schemas.py` and `app/agent/graph.py`, which keeps the agent in one package and stops
-  `app/rag/` mixing retrieval with orchestration. Same work, one directory over.
+- **Module paths.** The plan puts state in `app/rag/state.py` and the workflow in
+  `app/rag/workflow.py`. They live in `app/agent/schemas.py` and `app/agent/graph.py`, which keeps
+  the agent in one package and stops `app/rag/` mixing retrieval with orchestration. Same work, one
+  directory over. `app/services/ingestion.py` does exist, as the plan names it — but as a thin
+  facade over `app/rag/loaders.py` and `app/rag/ingest.py`, not a second loader. Parsing and
+  upserting stay one layer down, so there is still exactly one place a PDF is read.
+- **One corpus on disk.** The plan names `data/sample_kb/`; the documents live in
+  `data/private_kb/` and there is no second directory. Two overlapping HR corpora is the
+  self-contradiction failure described under *The knowledge base* — retrieval regularly draws
+  chunks from more than one file for a single question, and two documents disagreeing produces a
+  confidently wrong answer that grading cannot catch, because each chunk looks fine alone.
 
 1. `/chat` over `Copilot.ask` — the facade and its response model already exist
 2. SQLite data layer: chat history, feedback, document metadata, execution traces

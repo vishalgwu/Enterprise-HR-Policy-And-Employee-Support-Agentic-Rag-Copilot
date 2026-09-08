@@ -11,8 +11,9 @@ because the upsert succeeds and every later retrieval simply returns [].
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable, Sequence
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any
 
 from langchain_core.documents import Document
 
@@ -88,6 +89,19 @@ def ensure_index(
     index_name = _index_name(index_name, settings)
     dimension = dimension or settings.embedding_dim
 
+    # `embedding_dim` is 0 when EMBEDDING_DIM is unset and the active model is
+    # not in KNOWN_EMBEDDING_DIMS. `validate_embedding()` says so clearly, but
+    # only entry points call it -- an /ingest request reaches here directly, and
+    # creating a 0-d index is not recoverable, because Pinecone cannot resize
+    # one. Refuse at the last point that can still name the cause.
+    if dimension <= 0:
+        raise ValueError(
+            f"Cannot create or verify index {index_name!r}: no embedding "
+            f"dimension is known for {settings.active_embedding_model!r}. Set "
+            f"EMBEDDING_DIM explicitly, or add the model to "
+            f"KNOWN_EMBEDDING_DIMS."
+        )
+
     if index_name not in _index_names(pc):
         log.info("Creating Pinecone index %r (%d-d, %s)", index_name, dimension,
                  settings.pinecone_metric)
@@ -125,7 +139,7 @@ def namespace_count(
 
 def namespace_counts(
     pc: Any = None, index_name: str | None = None, settings: Settings | None = None
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Vector count per namespace, for health checks and ingest reporting."""
     settings = settings or get_settings()
     pc = pc or get_pinecone_client()
@@ -285,7 +299,7 @@ def get_retriever(
     k: int | None = None,
     score_threshold: float | None = -1.0,
     embedding: Any = None,
-    metadata_filter: Dict[str, Any] | None = None,
+    metadata_filter: dict[str, Any] | None = None,
     index_name: str | None = None,
     settings: Settings | None = None,
 ):
@@ -304,7 +318,7 @@ def get_retriever(
         score_threshold = settings.relevance_threshold
 
     vectorstore = get_vectorstore(namespace, embedding, index_name, settings)
-    search_kwargs: Dict[str, Any] = {"k": k}
+    search_kwargs: dict[str, Any] = {"k": k}
     if metadata_filter:
         search_kwargs["filter"] = metadata_filter
     if score_threshold is None:
@@ -320,10 +334,10 @@ def similarity_with_scores(
     namespace: str,
     k: int | None = None,
     embedding: Any = None,
-    metadata_filter: Dict[str, Any] | None = None,
+    metadata_filter: dict[str, Any] | None = None,
     index_name: str | None = None,
     settings: Settings | None = None,
-) -> List[Tuple[Document, float]]:
+) -> list[tuple[Document, float]]:
     """Top-k chunks with raw cosine scores, ungated.
 
     The scores reported here are on the same scale `score_threshold` expects,

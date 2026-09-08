@@ -12,9 +12,10 @@ says it does not know.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any
 
 from langchain_core.documents import Document
 
@@ -43,8 +44,8 @@ class IngestReport:
     documents: int = 0
     chunks: int = 0
     vectors_in_namespace: int = 0
-    sources: List[str] = field(default_factory=list)
-    departments: Dict[str, int] = field(default_factory=dict)
+    sources: list[str] = field(default_factory=list)
+    departments: dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> str:
         return (
@@ -54,9 +55,9 @@ class IngestReport:
         )
 
 
-def _describe(documents: Sequence[Document]) -> tuple[List[str], Dict[str, int]]:
-    sources: List[str] = []
-    departments: Dict[str, int] = {}
+def _describe(documents: Sequence[Document]) -> tuple[list[str], dict[str, int]]:
+    sources: list[str] = []
+    departments: dict[str, int] = {}
     for document in documents:
         source = str((document.metadata or {}).get("source", "unknown"))
         if source not in sources:

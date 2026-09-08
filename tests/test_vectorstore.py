@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import pytest
 
+from app.core.config import Settings
 from app.rag.retrieval import build_filter
-from app.rag.vectorstore import _attr, _index_ready, to_relevance_scale
-
+from app.rag.vectorstore import (
+    _attr,
+    _index_ready,
+    ensure_index,
+    to_relevance_scale,
+)
 
 # --- Score scale -------------------------------------------------------------
 
@@ -71,3 +76,27 @@ def test_filters_compose():
         "department": {"$eq": "payroll"},
         "doc_type": {"$eq": "pdf"},
     }
+
+
+# --- Refusing an unusable index dimension ------------------------------------
+# `embedding_dim` is 0 when EMBEDDING_DIM is unset and the model is not in
+# KNOWN_EMBEDDING_DIMS. Entry points catch that via validate_required(), but an
+# /ingest request reaches ensure_index directly, and a 0-d index cannot be
+# repaired -- Pinecone cannot resize one.
+
+
+def test_ensure_index_refuses_an_unknown_dimension_before_calling_pinecone():
+    unknown = Settings(
+        _env_file=None,
+        PINECONE_API="p",
+        EMBEDDING_MODEL="some/unlisted-model",
+        EMBEDDING_DIM=0,
+    )
+    assert unknown.embedding_dim == 0
+
+    class _ExplodingClient:
+        def list_indexes(self):
+            raise AssertionError("Pinecone must not be touched with no dimension")
+
+    with pytest.raises(ValueError, match="no embedding dimension is known"):
+        ensure_index(_ExplodingClient(), settings=unknown)

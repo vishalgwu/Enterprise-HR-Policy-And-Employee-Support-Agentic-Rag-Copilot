@@ -12,9 +12,9 @@ that ingesting markdown never pays to import a PDF parser.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Sequence
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -31,7 +31,7 @@ log = get_logger("loaders")
 
 # Extension -> the `doc_type` recorded in metadata. Also the allow-list for
 # uploads: anything not here is rejected rather than silently skipped.
-SUPPORTED_SUFFIXES: Dict[str, str] = {
+SUPPORTED_SUFFIXES: dict[str, str] = {
     ".md": "markdown",
     ".markdown": "markdown",
     ".txt": "text",
@@ -43,7 +43,7 @@ DEFAULT_DEPARTMENT = "general"
 
 # Which separators suit which format. Markdown gets heading-first splitting;
 # everything else is prose.
-_SEPARATORS_BY_TYPE: Dict[str, List[str]] = {
+_SEPARATORS_BY_TYPE: dict[str, list[str]] = {
     "markdown": MARKDOWN_SEPARATORS,
 }
 
@@ -100,7 +100,7 @@ def _read_docx(path: Path) -> str:
     return "\n".join(block for block in blocks if block)
 
 
-_READERS: Dict[str, Callable[[Path], str]] = {
+_READERS: dict[str, Callable[[Path], str]] = {
     "markdown": _read_text,
     "text": _read_text,
     "pdf": _read_pdf,
@@ -175,7 +175,7 @@ def load_directory(
     directory: Path | str,
     origin: str,
     recursive: bool = True,
-) -> List[Document]:
+) -> list[Document]:
     """Load every supported file under a directory.
 
     A subdirectory name becomes the document's `department`, so
@@ -188,7 +188,7 @@ def load_directory(
         raise FileNotFoundError(f"Knowledge base directory not found: {directory}")
 
     paths = sorted(directory.rglob("*") if recursive else directory.glob("*"))
-    documents: List[Document] = []
+    documents: list[Document] = []
     for path in paths:
         if not path.is_file():
             continue
@@ -215,7 +215,7 @@ def load_web_documents(
     title: str = "",
     timeout: int = 30,
     settings: Settings | None = None,
-) -> List[Document]:
+) -> list[Document]:
     """Load one web page, optionally scoped to a single content container.
 
     Scoping matters: the unscoped HR Acuity article page is ~18.5k characters of
@@ -274,7 +274,7 @@ def class_matcher(class_name: str) -> Callable[[object], bool]:
 # --- Chunking ----------------------------------------------------------------
 
 
-def separators_for(doc_type: str | None) -> List[str]:
+def separators_for(doc_type: str | None) -> list[str]:
     """Best separators for a format, defaulting to prose."""
     return _SEPARATORS_BY_TYPE.get(doc_type or "", PROSE_SEPARATORS)
 
@@ -285,7 +285,7 @@ def split_documents(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
     settings: Settings | None = None,
-) -> List[Document]:
+) -> list[Document]:
     """Chunk documents, recording each chunk's offset for stable ids.
 
     With `separators=None` each document is split by its own `doc_type`, so a
@@ -296,7 +296,7 @@ def split_documents(
     chunk_size = chunk_size or settings.chunk_size
     chunk_overlap = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
 
-    splitters: Dict[tuple, RecursiveCharacterTextSplitter] = {}
+    splitters: dict[tuple, RecursiveCharacterTextSplitter] = {}
 
     def splitter_for(chosen: Sequence[str]) -> RecursiveCharacterTextSplitter:
         key = tuple(chosen)
@@ -309,7 +309,7 @@ def split_documents(
             )
         return splitters[key]
 
-    chunks: List[Document] = []
+    chunks: list[Document] = []
     for document in documents:
         chosen = separators or separators_for(document.metadata.get("doc_type"))
         chunks.extend(splitter_for(chosen).split_documents([document]))
@@ -335,9 +335,9 @@ def format_documents(docs: Iterable[Document]) -> str:
     )
 
 
-def cite_sources(docs: Iterable[Document]) -> List[Dict[str, str]]:
+def cite_sources(docs: Iterable[Document]) -> list[dict[str, str]]:
     """Deduplicated source descriptors, for the `sources` field of an answer."""
-    seen: Dict[str, Dict[str, str]] = {}
+    seen: dict[str, dict[str, str]] = {}
     for doc in docs:
         metadata = doc.metadata or {}
         source = str(metadata.get("source", "unknown"))

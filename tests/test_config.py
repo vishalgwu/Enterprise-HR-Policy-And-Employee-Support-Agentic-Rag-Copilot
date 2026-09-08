@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings
 
@@ -204,7 +205,9 @@ def test_groq_is_the_default_provider_for_both():
 
 
 def test_an_unknown_provider_is_rejected_at_construction():
-    with pytest.raises(Exception):
+    # ValidationError specifically: a Literal field must fail validation, not
+    # fail some other way that happens to raise.
+    with pytest.raises(ValidationError):
         Settings(_env_file=None, LLM_PROVIDER="anthropic")
 
 
@@ -325,7 +328,10 @@ def test_exported_settings_feed_back_into_a_later_settings_object(monkeypatch):
 
 
 def test_settings_are_immutable():
-    with pytest.raises(Exception):
+    # frozen=True raises ValidationError on assignment. Asserting the type
+    # matters: a plain `Exception` would also pass if the attribute simply did
+    # not exist, which is the opposite of what this pins down.
+    with pytest.raises(ValidationError):
         Settings().pinecone_index = "something-else"  # type: ignore[misc]
 
 

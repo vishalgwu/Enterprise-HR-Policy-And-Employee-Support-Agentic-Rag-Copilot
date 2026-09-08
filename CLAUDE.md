@@ -21,16 +21,27 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 122 tests, offline, no credentials needed
+pytest                                 # 144 tests, offline, no credentials needed
+python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
+
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
 python scripts/ingest_public_web.py    # scraped article     -> "public-web"
 python scripts/demo.py                 # four demos, one per graph path
 python scripts/check_retrieval.py      # gated vs ungated retrieval scores
+python scripts/inspect_document.py     # load + chunk one file, offline, no keys
 python scripts/render_graph.py         # regenerate docs/agent-graph.md
 python run.py                          # uvicorn on :8000
 ```
 
-No linter or formatter is configured. `pyproject.toml` carries a ruff section that nothing runs yet.
+**ruff is configured in `pyproject.toml`, pinned in `req.txt`, and the tree passes with zero
+findings.** Keep it that way; it is a real gate now, not an aspiration. Pinned deliberately — a
+minor release adds rules, and a lint gate that starts failing on an unchanged tree is one people
+learn to ignore.
+
+**Every script parses arguments before it validates credentials, and that ordering is the point.**
+`scripts/demo.py` used to read `sys.argv` by hand, so `--help` matched nothing, was ignored, and
+fired four live Groq/Pinecone/Tavily round trips at someone asking what the flags were. Every
+script uses `argparse` now, and `--help` works in a checkout with no `.env`.
 
 ## Module layering
 
@@ -38,7 +49,8 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 
 | Module | Responsibility |
 |---|---|
-| `app/core/config.py` | `Settings`, logging, console setup. No heavy imports. |
+| `app/core/logging_config.py` | `LOGGER_NAME`, `get_logger`, `configure_logging`, `configure_stdout` |
+| `app/core/config.py` | `Settings`, plus a re-export of the logging names. No heavy imports. |
 | `app/rag/clients.py` | embeddings (cached), chat model, Tavily search — the only place providers branch |
 | `app/rag/loaders.py` | markdown/text/PDF/DOCX/web loading, chunking, chunk ids, evidence rendering |
 | `app/rag/vectorstore.py` | Pinecone, parameterised by **index and namespace** |
@@ -49,9 +61,17 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 | `app/agent/decisions.py` | router and grader, with recovery |
 | `app/agent/nodes.py` | node bodies, as closures |
 | `app/agent/graph.py` | wiring and compilation |
+| `app/services/ingestion.py` | load -> chunk -> index, as one door. A facade over `rag`, never a second loader |
 | `app/services/copilot.py` | `Copilot` facade and `AnswerResult` — the API contract |
 | `app/main.py`, `app/api/` | FastAPI |
 | `scripts/*` | thin CLI callers |
+
+There is no `test.py` or `data/sample_kb/` at the repo root; both existed briefly and were removed.
+`test.py` shadowed the stdlib `test` package on `sys.path` and was never collected (`testpaths =
+["tests"]`) — it is now `scripts/inspect_document.py`. `data/sample_kb/` was a second HR corpus
+overlapping `data/private_kb/` on onboarding, offboarding and payroll, in different vocabulary
+("HR portal" against the KB's "HR Service Desk" / "Workday"). See **The KB must not contradict
+itself** below: that is the failure grading cannot catch, because each chunk looks fine alone.
 
 An earlier version had `graph.py` importing `get_kb_retriever` from `private_kb.py` — an entry
 point. That is the specific mistake this table exists to prevent: **the agent must not depend on a
@@ -82,6 +102,23 @@ into the `GROQ_API_KEY` / `TAVILY_API_KEY` / `PINECONE_API_KEY` forms that ChatG
 and Pinecone read *in their constructors*, plus the `USER_AGENT` that `WebBaseLoader` requires.
 Every client module imports its settings from here, which is what guarantees the ordering. Do not
 construct a client before importing config, and do not move the export.
+
+**The thing that makes that happen is `settings = get_settings()` at the foot of `config.py`, and
+nothing imports it.** It has no readers by design — callers use `get_settings()` or build their own
+`Settings`, so they are not coupled to import order — which means it reads exactly like dead code
+to a linter, to a reviewer, and to the next cleanup pass. It is not: it is the single call that
+runs `export_client_env()` on import. Delete it and every provider client breaks at once, silently,
+at construction time, because `GROQ_API_KEY` and friends are simply never in the environment. The
+comment above it says so; leave both in place.
+
+**`app/main.py` defines both `create_app()` and a module-level `app`, and both are load-bearing.**
+The factory is what lets a test build an instance over arbitrary `Settings` — that is how
+production behaviour (docs withheld, admin key mandatory) is exercised without touching the process
+environment — and `run.py` uses it with `--factory`. The module-level `app` is the conventional
+ASGI target, so `uvicorn app.main:app` in a Dockerfile or on a platform that knows nothing about
+factories still works. Building `app` at import means importing `app.main` reads settings and
+attaches the log handler; that is correct for an entry-point module and wrong for a library one,
+which is why nothing under `app/rag/` or `app/agent/` does it.
 
 **pydantic-settings reads `.env` but does not export it, unlike `load_dotenv()`.** This bit once:
 switching to `SettingsConfigDict(env_file=...)` silently killed LangSmith tracing, because the old
@@ -236,6 +273,20 @@ would delete the entire rest of the corpus.
 after ingest because a retrieval fired immediately after an upsert returns nothing. Do not drop
 this when refactoring ingest.
 
+**`ensure_index` refuses a dimension of 0, and that guard is not redundant.** `embedding_dim` is 0
+when `EMBEDDING_DIM` is unset and the active model is not in `KNOWN_EMBEDDING_DIMS`.
+`validate_embedding()` reports it clearly, but only entry points call `validate_required()` — an
+`/ingest` request reaches `ensure_index` directly. A 0-d index cannot be repaired, because Pinecone
+cannot resize one, so this refuses at the last point that can still name the cause rather than
+letting Pinecone reject it later against an index that then has to be recreated under a new name.
+
+**There is exactly one gate, and it lives in Pinecone.** `get_kb_retriever()` applies it through
+`similarity_score_threshold`; `retrieve_with_scores()` reports the ungated numbers it is tuned
+from. There used to also be a `retrieve_relevant()` that filtered `retrieve_with_scores` by
+`relevance_threshold` in Python — weaker in two ways (it re-ranked only the `k` rows that came back
+rather than gating the search, and silently lost the `department` / `doc_type` filters its sibling
+accepts) and with no callers. Deleted; a comment stands where it was. Do not reintroduce it.
+
 **Pinecone SDK shape-tolerance.** `_index_names`, `_attr` and `_index_ready` exist because the v7
 client returns index listings and status as either objects or dicts depending on call path. Keep
 that defensiveness if you touch them.
@@ -292,6 +343,21 @@ flaky Pinecone or Tavily call would cost an answer the other source could have g
 web fallback), search failure becomes empty evidence, a rewrite failure keeps the original query
 while still incrementing `retry_count` so a broken LLM cannot spin the loop, and a generation
 failure returns `GENERATION_FAILED` with `source_used="error"` rather than an empty answer.
+
+**"Inside the guard" is the whole rule, and it is easy to half-observe.** `_generate` used to call
+`.content` inside `guard()` and `.strip()` outside it. `.content` is a plain string on Groq and
+OpenAI, but the message interface allows a *list of content blocks*, and `.strip()` on a list
+raises `AttributeError` — which escaped the node and aborted the run, so a provider shape change
+would have cost every answer rather than degrading one. Both generation and the rewrite now flatten
+through `message_text()` in `app/rag/clients.py`, inside the guard.
+`test_a_reply_of_content_blocks_does_not_abort_the_run` fails against the old code with exactly
+that AttributeError; keep it. When adding a node, check where the *last* attribute access happens,
+not just where the network call does.
+
+**Provider response shapes are adapted in `app/rag/clients.py` and nowhere else.** `message_text`
+for chat replies, `web_results_to_text` and `web_result_urls` for Tavily. A node that reaches into
+a provider's response shape directly is a bug waiting for the next SDK release;
+`tests/test_clients.py` pins all three offline.
 
 **Graph nodes are closures, built once per graph.** `build_nodes` takes the LLM, retriever and
 search tool and closes over them, so a run constructs each once and tests can inject fakes — that
@@ -373,10 +439,18 @@ hyphens and smart quotes models emit — the API call succeeds and `print()` is 
 `tests/conftest.py` supplies `FakeLLM`, `FakeRetriever` and `FakeWebSearch`. If a change makes a
 test need the network, the change broke the injection, not the test.
 
-**The `no_tracing` autouse fixture is part of that guarantee, not tidiness.** Without it the suite
-is offline only by accident: `app.core.config` exports tracing into `os.environ` at import, so on a
-machine with LangSmith enabled every graph test uploads its run — observed, complete with
-`403 Forbidden` noise in the output. Do not remove it.
+**Assert the exception type, not `Exception`.** `pytest.raises(Exception)` passes when the code
+fails for a completely different reason than the one under test — an `AttributeError` from a
+renamed field satisfies it just as well as the `ValidationError` the test meant. ruff's `B017`
+enforces this.
+
+**The `clean_process_env` autouse fixture is part of that guarantee, not tidiness.** Without it the
+suite is offline only by accident: `app.core.config` exports tracing into `os.environ` at import, so
+on a machine with LangSmith enabled every graph test uploads its run — observed, complete with
+`403 Forbidden` noise in the output. It also clears `OPENAI_API_KEY`, whose export name equals its
+input alias, so a test that sets one cannot configure every `Settings` built after it. Do not remove
+it. (It was called `no_tracing` in an earlier revision; this file said so long after the code
+stopped.)
 
 **A test asserting a default must isolate from *both* config sources.** `Settings()` reads
 `os.environ` first and `.env` second, and `export_client_env` has already written to `os.environ` by
@@ -395,12 +469,21 @@ deliberately when the graph changes rather than loosening it.
 ## The build plan
 
 [step.md](step.md) is the user's 16-step plan for this project; steps 1–9 and 16 are done. It
-deviates from the code in two ways, both deliberate and both recorded in the README's Roadmap: it
-names OpenAI embeddings and model (this uses local `all-MiniLM-L6-v2` and Groq), and it puts
-ingestion, state and workflow at `app/services/ingestion.py`, `app/rag/state.py` and
-`app/rag/workflow.py` (they are at `app/rag/ingest.py`, `app/agent/schemas.py`,
-`app/agent/graph.py`). Do not "fix" the code to match those paths without asking — the split keeps
-the agent in one package.
+deviates from the code in three ways, all deliberate and all recorded in the README's Roadmap. Do
+not "fix" the code to match the plan without asking.
+
+- **Providers.** The plan names OpenAI embeddings and model; this runs local `all-MiniLM-L6-v2` and
+  Groq. Both OpenAI paths are supported and verified live — it is a default, not a limitation.
+- **Module paths.** The plan puts state and workflow at `app/rag/state.py` and
+  `app/rag/workflow.py`; they are at `app/agent/schemas.py` and `app/agent/graph.py`, which keeps
+  the agent in one package. `app/services/ingestion.py` does exist as the plan names it, but as a
+  thin facade over `app/rag/loaders.py` and `app/rag/ingest.py` — parsing and upserting stay one
+  layer down, so there is still exactly one place a PDF is read.
+- **One corpus on disk.** The plan names `data/sample_kb/`; the documents are in
+  `data/private_kb/` and there is no second directory. A `data/sample_kb/hr_operations_runbook.md`
+  existed briefly and was deleted: it re-covered onboarding, offboarding and payroll in vaguer
+  terms and different vocabulary than the real KB. Adding a parallel corpus here is not a neutral
+  act — see **The KB must not contradict itself**.
 
 ## Leftovers
 

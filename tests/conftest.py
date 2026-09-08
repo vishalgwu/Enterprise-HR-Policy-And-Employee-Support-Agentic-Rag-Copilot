@@ -9,8 +9,9 @@ that injection exists.
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any
 
 import pytest
 from langchain_core.documents import Document
@@ -44,7 +45,7 @@ class FakeLLM(Runnable):
         self.grades = list(grades)
         self.rewrite = rewrite
         self.fail = fail
-        self.calls: List[str] = []
+        self.calls: list[str] = []
 
     # --- Runnable ---------------------------------------------------------
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> AIMessage:
@@ -79,9 +80,9 @@ class FakeRetriever:
     def __init__(self, results: Any = None, fail: bool = False) -> None:
         self.results = results if results is not None else []
         self.fail = fail
-        self.queries: List[str] = []
+        self.queries: list[str] = []
 
-    def invoke(self, query: str, *args: Any, **kwargs: Any) -> List[Document]:
+    def invoke(self, query: str, *args: Any, **kwargs: Any) -> list[Document]:
         self.queries.append(query)
         if self.fail:
             raise RuntimeError("simulated Pinecone outage")
@@ -98,9 +99,9 @@ class FakeWebSearch:
         self.answer = answer
         self.results = results if results is not None else []
         self.fail = fail
-        self.queries: List[str] = []
+        self.queries: list[str] = []
 
-    def invoke(self, payload: Dict[str, Any], *args: Any, **kwargs: Any) -> Dict[str, Any]:
+    def invoke(self, payload: dict[str, Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
         self.queries.append(payload.get("query", ""))
         if self.fail:
             raise RuntimeError("simulated Tavily outage")
@@ -175,5 +176,5 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def kb_docs() -> List[Document]:
+def kb_docs() -> list[Document]:
     return [kb_doc()]

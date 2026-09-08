@@ -56,3 +56,10 @@ langchain-openai==1.6.0
 
 # Unpinned on purpose: langchain. Nothing here imports it, but langchain-tavily
 # requires it, and pinning it directly implied this project chose it.
+
+# --- Development tools -------------------------------------------------------
+# Configured in pyproject.toml and expected to pass with zero findings:
+#     python -m ruff check app scripts tests run.py ingest_sample_kb.py
+# Pinned because a ruff minor release adds rules, and a lint gate that starts
+# failing on an unchanged tree is a gate people learn to ignore.
+ruff==0.14.5

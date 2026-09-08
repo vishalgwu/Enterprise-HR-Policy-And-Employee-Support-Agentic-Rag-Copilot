@@ -22,7 +22,7 @@ if __package__ in (None, ""):  # allow `python scripts/demo.py`
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import sys
+import argparse
 
 from app.core.config import configure_logging, configure_stdout, get_settings
 from app.services.copilot import Copilot, render_answer
@@ -86,12 +86,29 @@ def run(selected: int | None = None, verbose: bool = True) -> None:
 
 
 def main() -> None:
-    args = sys.argv[1:]
-    verbose = "-q" not in args
-    numbers = [int(a) for a in args if a.isdigit()]
-    if numbers and not 1 <= numbers[0] <= len(DEMOS):
-        raise SystemExit(f"demo must be 1..{len(DEMOS)}")
-    run(numbers[0] if numbers else None, verbose=verbose)
+    # argparse rather than reading sys.argv by hand. Hand-rolled parsing here
+    # silently ignored --help and ran all four demos instead of printing it --
+    # four live Groq, Pinecone and Tavily round trips for someone who asked
+    # what the flags were. Parsing first is also what keeps --help working in a
+    # checkout with no credentials, since run() calls validate_required().
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "demo",
+        nargs="?",
+        type=int,
+        choices=range(1, len(DEMOS) + 1),
+        help="run one demo instead of all four",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="suppress the per-node trace on stderr",
+    )
+    args = parser.parse_args()
+    run(args.demo, verbose=not args.quiet)
 
 
 if __name__ == "__main__":

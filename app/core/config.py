@@ -1,4 +1,5 @@
-"""Settings, logging and console setup.
+"""Settings for the whole project, plus the logging names re-exported from
+`logging_config` so callers have one import to remember.
 
 The lowest layer: imported by everything, and deliberately free of heavy
 dependencies so importing configuration never drags in torch, bs4 or Pinecone.
@@ -23,22 +24,26 @@ Two things about the import-time behaviour are load-bearing:
 from __future__ import annotations
 
 import hmac
-import logging
 import os
-import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Literal
+from typing import Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Re-exported: `from app.core.config import configure_logging, get_logger` is
+# the import every entry point and module already uses, and stays supported.
+from app.core.logging_config import (  # noqa: F401
+    DETAILED_FORMAT,
+    LOGGER_NAME,
+    MESSAGE_FORMAT,
+    configure_logging,
+    configure_stdout,
+    get_logger,
+)
 
-LOGGER_NAME = "hr_copilot"
-# A library must not configure logging for its host. NullHandler keeps these
-# records silent until an entry point calls configure_logging().
-logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -52,7 +57,7 @@ DEFAULT_USER_AGENT = (
 # that then has to be recreated under a new name.
 # Field name -> the env var a user has to set. One map so an error message and
 # a health check cannot disagree about what to tell someone.
-SECRET_ALIASES: Dict[str, str] = {
+SECRET_ALIASES: dict[str, str] = {
     "groq_api_key": "GROQ_API",
     "tavily_api_key": "TAVILY_API",
     "pinecone_api_key": "PINECONE_API",
@@ -61,7 +66,7 @@ SECRET_ALIASES: Dict[str, str] = {
     "langsmith_api_key": "LANGSMITH_API_KEY",
 }
 
-KNOWN_EMBEDDING_DIMS: Dict[str, int] = {
+KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "sentence-transformers/all-MiniLM-L6-v2": 384,
     "sentence-transformers/all-mpnet-base-v2": 768,
     "text-embedding-3-small": 1536,
@@ -274,7 +279,7 @@ class Settings(BaseSettings):
 
     # --- Provider resolution -------------------------------------------------
     @model_validator(mode="after")
-    def _derive_embedding_dim(self) -> "Settings":
+    def _derive_embedding_dim(self) -> Settings:
         """Fill embedding_dim from the active model when it was not given.
 
         Derives only; it must never raise. A `model_validator` that raises
@@ -369,7 +374,7 @@ class Settings(BaseSettings):
         """True when either configured provider needs an OpenAI key."""
         return self.llm_provider == "openai" or self.embedding_provider == "openai"
 
-    def required_secret_fields(self) -> List[str]:
+    def required_secret_fields(self) -> list[str]:
         """Which credentials this configuration actually needs.
 
         Provider-aware on purpose: a deployment running entirely on OpenAI must
@@ -390,7 +395,7 @@ class Settings(BaseSettings):
         raw = value.get_secret_value() if isinstance(value, SecretStr) else str(value)
         return raw.strip()
 
-    def missing_secrets(self) -> List[str]:
+    def missing_secrets(self) -> list[str]:
         return [
             SECRET_ALIASES[field]
             for field in self.required_secret_fields()
@@ -475,9 +480,17 @@ def get_settings() -> Settings:
     return settings
 
 
-# Module-level convenience for the common case. Tests and FastAPI dependencies
-# should call get_settings() (or build their own Settings) rather than reaching
-# for this, so they are not coupled to import order.
+# DO NOT DELETE, and do not import it either.
+#
+# Nothing in this project reads this name -- callers use get_settings(), or
+# build their own Settings, so they are not coupled to import order. What this
+# line is for is its *side effect*: it is the single call that runs
+# export_client_env() when `app.core.config` is imported, which is what puts
+# GROQ_API_KEY / TAVILY_API_KEY / PINECONE_API_KEY / USER_AGENT into the
+# environment before any client constructor reads them. Every client module
+# imports its settings from here, so this ordering is guaranteed -- and it is
+# guaranteed by this line alone. Removing it as an unused global would break
+# every provider client at once, silently, at construction time.
 settings = get_settings()
 
 
@@ -499,39 +512,3 @@ HR_POLICY_URL = (
 # The article body lives in .entry-content; parsing only that keeps site
 # navigation, related-post cards and the footer out of the vector index.
 HR_POLICY_CONTENT_CLASS = "entry-content"
-
-
-# --- Logging -----------------------------------------------------------------
-
-
-def get_logger(name: str) -> logging.Logger:
-    """Logger for one module, under the package's shared root."""
-    return logging.getLogger(f"{LOGGER_NAME}.{name}")
-
-
-def configure_logging(level: int = logging.INFO) -> None:
-    """Send this package's logs to stderr. Entry points only, never on import.
-
-    stderr keeps stdout clean for the answer itself, so `python scripts/demo.py
-    > out.txt` captures results without the per-node trace.
-    """
-    logger = logging.getLogger(LOGGER_NAME)
-    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-    logger.setLevel(level)
-    logger.propagate = False
-
-
-def configure_stdout() -> None:
-    """Print UTF-8 regardless of the console code page.
-
-    Windows consoles default to cp1252, which raises UnicodeEncodeError on the
-    non-breaking hyphens, em dashes and smart quotes that LLM replies routinely
-    contain. The API call succeeds and the crash lands on print().
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="replace")
