@@ -16,27 +16,20 @@ if __package__ in (None, ""):  # allow `python scripts/ingest_public_web.py`
 
     sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import argparse
-
 from app.core.config import (
     HR_POLICY_CONTENT_CLASS,
     HR_POLICY_URL,
-    configure_logging,
-    configure_stdout,
     get_settings,
 )
 from app.rag.ingest import ingest_web_page
 from app.rag.vectorstore import namespace_counts
+from scripts._cli import parser_for
 
 
 def main() -> None:
-    configure_stdout()
-    configure_logging()
     settings = get_settings()
 
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = parser_for(__doc__)
     parser.add_argument("--url", default=HR_POLICY_URL)
     parser.add_argument(
         "--content-class",

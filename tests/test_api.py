@@ -7,6 +7,7 @@ the audit database is a file under tmp_path.
 
 from __future__ import annotations
 
+import pytest
 from conftest import FakeLLM, FakeRetriever, FakeWebSearch, kb_doc, settings_for
 from fastapi.testclient import TestClient
 
@@ -81,12 +82,50 @@ def test_interactive_docs_are_served_outside_production():
 
 
 def test_interactive_docs_are_withheld_in_production():
-    """They enumerate every route, admin ones included."""
-    c = client(APP_ENV="production")
+    """They enumerate every route, admin ones included.
+
+    The admin key is set because a production app without one no longer builds
+    at all -- see `test_production_refuses_to_start_without_an_admin_key`. This
+    test is about the docs, so it supplies the key and gets out of the way.
+    """
+    c = client(APP_ENV="production", ADMIN_API_KEY="k")
     assert c.get("/docs").status_code == 404
     assert c.get("/openapi.json").status_code == 404
     # /health still works -- the load balancer depends on it.
     assert c.get("/health").status_code == 200
+
+
+def test_production_refuses_to_start_without_an_admin_key():
+    """The rule lived in `validate_required`, which no server ever called.
+
+    Both the README and the console's Overview page say a production deployment
+    refuses to start without an admin key. That was true of the function and
+    false of the application: only the CLI scripts called `validate_required`,
+    so `python run.py` and `uvicorn app.main:app` both booted happily with the
+    admin surface silently off -- a deployment HR staff could neither upload
+    policy to nor read the audit log from, with nothing said about it anywhere.
+
+    `create_app` now enforces it, which covers both entry points.
+    """
+    with pytest.raises(ValueError, match="ADMIN_API_KEY"):
+        client(APP_ENV="production")
+
+    # Development is deliberately unaffected: it runs without a key, and the
+    # admin routes fail closed on their own.
+    assert client(APP_ENV="development").get("/health").status_code == 200
+
+
+def test_a_missing_provider_key_still_lets_production_start():
+    """Only the admin rule is fatal. A missing provider key must not be.
+
+    /health coming up and reporting `degraded` is more use to a deploy than a
+    container that exits before it can say why.
+    """
+    body = client(APP_ENV="production", ADMIN_API_KEY="k", GROQ_API="").get(
+        "/health"
+    ).json()
+    assert body["status"] == "degraded"
+    assert body["missing_secrets"] == ["GROQ_API"]
 
 
 def test_health_is_reachable_without_any_credentials():

@@ -467,6 +467,33 @@ class Settings(BaseSettings):
             if not self._secret(field)
         ]
 
+    def validate_admin_surface(self) -> None:
+        """Refuse a production deployment that has no admin key.
+
+        Split out of `validate_required` because the two have different
+        audiences and only this one belongs on the server's path. A missing
+        provider key must *not* stop the app booting -- `/health` reporting
+        `degraded` is more useful to a deploy than a container that exits, and
+        `validate_required` is therefore called only by the CLI scripts, which
+        genuinely cannot do their job without credentials.
+
+        This rule is the opposite: it is a deliberate refusal, not a degraded
+        state. `create_app` calls it, so both `python run.py` and
+        `uvicorn app.main:app` enforce it -- which is what the README and the
+        console's Overview page both claim, and what neither entry point
+        actually did until this was extracted. `validate_required` calls it too,
+        so there is one rule rather than a server copy and a CLI copy.
+
+        Only in production: development wants to run without a key, and the
+        admin routes already fail closed when it is unset.
+        """
+        if self.is_production and not self.admin_enabled:
+            raise ValueError(
+                "ADMIN_API_KEY must be set when APP_ENV=production -- the admin "
+                "endpoints are refused entirely without it, so HR staff could "
+                "neither upload policy nor read the audit log."
+            )
+
     def validate_required(self) -> None:
         """Fail fast, for entry points that need a usable configuration."""
         missing = self.missing_secrets()
@@ -476,13 +503,7 @@ class Settings(BaseSettings):
                 f"Add them to {PROJECT_ROOT / '.env'} (see .env.example)."
             )
         self.validate_embedding()
-        if self.is_production and not self.admin_enabled:
-            # Only in production: development wants to run without one, and
-            # admin routes already fail closed when it is unset.
-            raise ValueError(
-                "ADMIN_API_KEY must be set when APP_ENV=production -- the admin "
-                "endpoints are refused entirely without it."
-            )
+        self.validate_admin_surface()
 
     def export_client_env(self) -> None:
         """Publish settings under the names third-party clients look for.

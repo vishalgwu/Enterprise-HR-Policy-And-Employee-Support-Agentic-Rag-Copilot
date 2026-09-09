@@ -11,8 +11,10 @@ data layer, the roles and the deployment target.
 
 The retrieval stack, the 11-node LangGraph agent, the HTTP surface and the browser console are
 complete: `/health`, `/api/chat`, the admin-gated `/api/upload` and `/api/audit`, a SQLite audit
-log, and a single-page UI at `/` served from `templates/` and `static/`. Docker/DigitalOcean
-packaging is not built.
+log, and a single-page UI at `/` served from `templates/` and `static/`. Docker packaging is built
+and verified end to end (`Dockerfile`, `.dockerignore`, `docker-compose.yml`); the DigitalOcean
+deployment itself, and the Nginx frontend and ingestion worker the target architecture names, are
+not.
 
 ## Environment and commands
 
@@ -23,7 +25,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 228 tests, offline, no credentials needed
+pytest                                 # 230 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -33,6 +35,9 @@ python scripts/check_retrieval.py      # gated vs ungated retrieval scores
 python scripts/inspect_document.py     # load + chunk one file, offline, no keys
 python scripts/render_graph.py         # regenerate docs/agent-graph.md
 python run.py                          # uvicorn on :8000
+
+docker compose up -d --build           # the container, production defaults
+docker compose ps                      # STATUS must read (healthy)
 ```
 
 **ruff is configured in `pyproject.toml`, pinned in `req.txt`, and the tree passes with zero
@@ -83,6 +88,7 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 | `templates/index.html` | the console, one Jinja2 page |
 | `static/css/style.css` | tokens, components, both themes |
 | `static/js/app.js` | the console's behaviour; no framework, no build step |
+| `scripts/_cli.py` | the preamble every script shares: console setup, then a parser |
 | `scripts/*` | thin CLI callers |
 
 There is no `test.py` or `data/sample_kb/` at the repo root; both existed briefly and were removed.
@@ -191,6 +197,22 @@ rendered into the error text that then reaches logs and tracebacks. Observed exa
 dimension-mismatch check: the message began ``input_value={'GROQ_API': 'gsk_...``. Field-level
 errors are safe (they echo only that field), but anything cross-field belongs in an ordinary method
 like `validate_embedding()`, called from `validate_required()`.
+
+**The production admin-key rule is enforced in `create_app`, not only in `validate_required`.**
+`validate_required()` has always held the rule, but **only the four CLI scripts ever called it** --
+`python run.py` and `uvicorn app.main:app` both sailed straight past, so a production deployment
+with no `ADMIN_API_KEY` booted happily with the admin surface silently off. The README and the
+console's Overview page both claimed it refused to start; that was true of the function and false of
+the application, and it was found by trying it in a container the day before a deploy. The rule now
+lives in `Settings.validate_admin_surface()`, which `create_app` calls (covering both entry points)
+and `validate_required()` also calls, so there is one implementation rather than a server copy and a
+CLI copy. `test_production_refuses_to_start_without_an_admin_key` pins it.
+
+**Only that rule is fatal at startup; a missing provider key is deliberately not.** `/health` coming
+up and reporting `degraded` with the missing names is more use to a deploy than a container that
+exits before it can say why -- which is why `create_app` calls `validate_admin_surface()` and *not*
+`validate_required()`. `test_a_missing_provider_key_still_lets_production_start` pins that half, and
+the two tests together are what stop someone "tidying" the call into the stricter one.
 
 **The admin key defaults to empty, and that is the design.** `ADMIN_API_KEY` gates the admin-only
 endpoints. A reference implementation used `"change-me-in-production"` as the default; that is worse
@@ -487,7 +509,10 @@ fails three tests rather than none.
 but flipped to `good` once inside a longer suite run. Treat single-run grader accuracy as
 approximate, and do not chase a one-off flip as a prompt bug.
 
-## Providers
+## Provider quirks at run time
+
+Distinct from **Providers** above, which is about *choosing* one. These are the things that bite
+once a chosen provider is actually answering questions.
 
 **Groq's free tier caps tokens per DAY, and exhaustion is invisible without looking.** Observed:
 `429 ... tokens per day (TPD): Limit 200000, Used 199771`. Because every safe default is "weak", an
@@ -659,7 +684,7 @@ the corpus.
 
 **`#view-overview` is a claims page, and every number on it must be a measured one.** It states the
 retrieval benchmark figures (0.099 / 0.171 / the 0.15 gate, 0.078 after the KB grew), the labelled
-decision set (21/21), the corpus size (11 documents, 31 chunks, 9 areas) and the gates (228 tests,
+decision set (21/21), the corpus size (11 documents, 31 chunks, 9 areas) and the gates (230 tests,
 zero ruff findings) — all of which are also in the README, which is where they were measured. **They
 must be changed in both places together.** It is the one screen written for a reader who cannot
 check it against the code, which makes a stale figure there worse than a stale figure anywhere else
@@ -732,6 +757,67 @@ in `app.js` maps a trace entry's tag (`"KB Retriever"`, `"Generate/Web"`) to a n
 consecutive visited nodes are exactly the edges traversed — including `rewrite -> retrieve`, the
 loop. Renaming a tag in `note()` calls in `app/agent/nodes.py` silently stops lighting that node, so
 change both together.
+
+## Docker notes
+
+`Dockerfile`, `.dockerignore` and `docker-compose.yml` are the deployment surface. All three were
+built and run before being committed; the numbers below are measured on this repo, not estimated.
+
+**`requirements.txt` is a one-line forward to `req.txt`, so the image copies both.** `COPY
+requirements.txt .` alone gives pip a file whose only instruction is to read one that is not in the
+image, and the build fails on a missing `req.txt`. This is the first thing that breaks if someone
+"simplifies" the COPY.
+
+**torch comes from PyTorch's CPU index, installed before `req.txt`.** `sentence-transformers`
+requires torch; the default PyPI wheel drags in the CUDA runtime for a GPU no container has.
+Measured on `python:3.13-slim`: default PyPI is torch 1.2 GB + `nvidia/` 3.2 GB for an **8.93 GB**
+image, the CPU index is torch 769 MB with no `nvidia/` for a **2.49 GB** image. Installing it
+*first* is what makes it work -- pip then finds the requirement already satisfied when
+`sentence-transformers` asks, so the CUDA wheel is never fetched. **The canary is
+`torch.__version__` ending in `+cpu`**; if it ever reads `+cu###` the ordering has been broken and
+the image is about to quadruple.
+
+**`HF_HUB_OFFLINE=1` is set *after* the model pre-fetch, and it is load-bearing.** The pre-fetch
+alone is not enough: measured with the model already cached and the container run with
+`--network none`, the first `embed_query` still spent **~40 seconds** failing HEAD requests to
+huggingface.co through five retries before falling back to disk. It answers correctly either way,
+so nothing in any log says the first employee of every deployment waited forty seconds. With the
+flag, 4.9 s. It must stay after the download step, which needs the network the flag switches off.
+
+**`.dockerignore` has two entries that are not housekeeping.** `hr/` is the virtualenv at 1.3 GB --
+the conventional `venv/ .venv/ env/` lines miss it because this project's is named `hr/`, and
+without it every build uploads 1.3 GB to the daemon before running an instruction. `data/*.db` is
+the audit log: every employee question and the answer they were given, which `/api/audit` is
+admin-gated to protect and which must not be baked into a distributable image. Note that Docker's
+`*` does not cross a path separator, so root-level `*.md` excludes `CLAUDE.md` and `step.md` while
+`data/private_kb/*.md` survives -- verify that with a matcher simulation, not by eye, if the
+patterns change.
+
+**`--env-file .env` does not work with this repo's `.env`, and the failure misleads.** Docker's
+env-file parser is not dotenv: it keeps surrounding quotes and the CR from CRLF line endings, both
+of which this `.env` has. `PINECONE_API="pcsk_..."` reaches the client with literal quote
+characters and Pinecone answers `401 UNAUTHENTICATED / Invalid API key` -- which looks exactly like
+a revoked credential and sends you to rotate one that was fine. Observed on the first containerised
+question. **`docker compose` is unaffected**, because it reads `.env` for `${...}` substitution with
+a parser that does strip quotes; that is why `docker-compose.yml` passes secrets through
+`environment:` and never `env_file:`. Do not "simplify" it to `env_file:`.
+
+**`/app/var` is the only writable path, and that is the whole of the container's state.** The repo
+defaults put `audit.db` inside `data/` beside the knowledge base, which in a container would mean
+granting the runtime user write access to the corpus it answers employees from. `kb_dir`,
+`upload_dir` and `audit_db_path` are settings precisely so a deployment can split them. The check is
+`find /app -maxdepth 1 -writable`, which must print exactly one line.
+
+**The image runs `app.main:app`, not the factory.** `run.py` uses `--factory`; the module-level
+`app` exists so a platform that knows nothing about factories can be handed an ASGI target. Both
+paths now enforce the production admin-key rule, because it moved into `create_app` -- see
+**Secrets** above.
+
+**Two things are the deployer's decision, not the image's.** The audit log is SQLite on a volume, so
+a platform with an ephemeral filesystem loses it on every redeploy -- for an HR audit trail that is
+the failure the log exists to prevent. And `/api/chat` is unauthenticated by design, so a public URL
+with no rate limit in front of it is a bill waiting to happen. Both are in the README's *Deploying*
+section; neither is something to silently "fix" in the Dockerfile.
 
 ## The build plan
 

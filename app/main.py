@@ -64,6 +64,16 @@ def create_app(
     settings = settings or get_settings()
     configure_logging()
 
+    # The one configuration rule the *server* enforces, rather than reporting.
+    # A missing provider key is deliberately not fatal -- /health comes up and
+    # says `degraded`, which is more use to a deploy than a container that
+    # exits. An unset admin key in production is different: it is not a degraded
+    # state, it is a deployment nobody can administer, and both this README and
+    # the console claim it refuses to boot. It did not, until this call existed:
+    # `validate_required` holds the rule but only the CLI scripts ever called
+    # it, so `python run.py` and `uvicorn app.main:app` both sailed past it.
+    settings.validate_admin_surface()
+
     application = FastAPI(
         title=settings.app_name,
         version=__version__,

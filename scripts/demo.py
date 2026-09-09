@@ -22,10 +22,9 @@ if __package__ in (None, ""):  # allow `python scripts/demo.py`
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import argparse
-
-from app.core.config import configure_logging, configure_stdout, get_settings
+from app.core.config import get_settings
 from app.services.copilot import Copilot, render_answer
+from scripts._cli import parser_for
 
 DEMOS = [
     (
@@ -54,8 +53,6 @@ DEMOS = [
 
 
 def run(selected: int | None = None, verbose: bool = True) -> None:
-    configure_stdout()
-    configure_logging()
     get_settings().validate_required()
 
     # One Copilot for every demo: it holds a single compiled graph, and the
@@ -91,9 +88,7 @@ def main() -> None:
     # four live Groq, Pinecone and Tavily round trips for someone who asked
     # what the flags were. Parsing first is also what keeps --help working in a
     # checkout with no credentials, since run() calls validate_required().
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = parser_for(__doc__)
     parser.add_argument(
         "demo",
         nargs="?",

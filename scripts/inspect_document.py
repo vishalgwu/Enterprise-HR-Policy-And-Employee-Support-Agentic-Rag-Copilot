@@ -22,10 +22,9 @@ if __package__ in (None, ""):  # allow `python scripts/inspect_document.py`
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import argparse
 from pathlib import Path
 
-from app.core.config import configure_logging, configure_stdout, get_settings
+from app.core.config import get_settings
 from app.services.ingestion import (
     DEFAULT_DEPARTMENT,
     SUPPORTED,
@@ -33,17 +32,14 @@ from app.services.ingestion import (
     chunk_id,
     load_file,
 )
+from scripts._cli import parser_for
 
 DEFAULT_DOCUMENT = Path("data/private_kb/hr-copilot-how-it-works.md")
 
 
 def main() -> int:
-    configure_stdout()
-    configure_logging()
 
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = parser_for(__doc__)
     parser.add_argument(
         "path",
         nargs="?",

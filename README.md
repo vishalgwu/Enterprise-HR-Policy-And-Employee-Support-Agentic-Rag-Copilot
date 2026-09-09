@@ -25,7 +25,7 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 228 tests, no network, no credentials | Implemented |
+| Test suite — 230 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
@@ -33,7 +33,8 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | SQLite audit layer (question, answer, decisions, trace, latency) | Implemented |
 | Browser console — chat, workflow graph, trace, evidence, upload, audit, project overview | Implemented |
 | Feedback capture | Not yet built |
-| Docker + DigitalOcean deployment | Not yet built |
+| Docker image + compose — non-root, CPU-only torch, model baked in | Implemented, built and run |
+| DigitalOcean deployment | Not yet built |
 
 The agent graph runs end to end behind an HTTP surface and a browser console: employees ask at `/`,
 HR staff upload policy through the same UI, and every answered question is written to a SQLite audit
@@ -597,7 +598,7 @@ python run.py                         # start the API and the console on :8000
 python run.py --reload                # development
 python run.py --port 8080             # override API_PORT for one run
 
-pytest                                # 228 tests, no network, no credentials
+pytest                                # 230 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -667,6 +668,116 @@ similarity gate alone would have let them through.
 Both ingests are idempotent — chunk ids are derived from `origin` + `source` + `start_index`, so
 re-running overwrites rather than duplicating.
 
+## Docker
+
+```bash
+docker compose up -d --build          # build and run, production defaults
+docker compose ps                     # STATUS should read (healthy)
+docker compose logs -f copilot
+docker compose down                   # stop, keep the audit log
+docker compose down -v                # stop and delete the audit log too
+```
+
+Or without compose:
+
+```bash
+docker build -t hr-copilot .
+docker run --rm -p 8080:8080 -v hr-copilot-data:/app/var \
+  -e GROQ_API=... -e TAVILY_API=... -e PINECONE_API=... -e ADMIN_API_KEY=... \
+  hr-copilot
+```
+
+The image is a single service: `uvicorn app.main:app` on `$PORT` (8080), non-root
+(uid 10001), with `/app/var` the only writable path in the container — the source, the templates
+and the knowledge base are root-owned and read-only to the app, so a bug in the upload handler
+cannot rewrite the code that serves the next request or the policy that answers it. `docker compose
+exec copilot sh -c 'find /app -maxdepth 1 -writable'` prints exactly one line.
+
+`HEALTHCHECK` polls `/health`, which is open at every environment because the load balancer depends
+on it. `docker compose ps` shows the result, so a container that is up but not answering is visible
+without reading a log.
+
+### Four decisions in the Dockerfile
+
+**Both requirement files are copied.** `requirements.txt` is a one-line forward to `req.txt`, which
+holds the pins. Copying only the conventional name gives pip a file whose sole instruction is to
+read one that is not in the image.
+
+**torch is installed CPU-only, first.** `sentence-transformers` pulls torch, and the default PyPI
+wheel drags in the CUDA runtime for a GPU no container has. Both sides measured on this base image:
+
+| | torch | `nvidia/` | image |
+|---|---|---|---|
+| default PyPI | 1.2 GB | 3.2 GB | **8.93 GB** |
+| PyTorch CPU index | 769 MB | — | **2.49 GB** |
+
+Installing from the CPU index *first* means pip finds the requirement already satisfied when
+`sentence-transformers` asks. `python -c "import torch; print(torch.__version__)"` must end in
+`+cpu`; if it ever reads `+cu###` the step has stopped working and the image is about to quadruple.
+
+**The embedding model is baked in, and `HF_HUB_OFFLINE=1` is set after it.** `all-MiniLM-L6-v2`
+otherwise downloads on first use — a ~90 MB fetch while an employee waits, and a hard failure on a
+deployment with locked egress. The offline flag is not belt-and-braces: measured with the model
+already cached and `--network none`, the first `embed_query` still spent **~40 s** failing HEAD
+requests to huggingface.co through five retries before falling back to disk. It answers correctly
+either way, so nothing in any log says the first employee waited. With the flag: **4.9 s**.
+
+**`app.main:app`, not the factory.** `run.py` uses `--factory`; the module-level `app` exists so a
+platform that knows nothing about factories can still be handed an ASGI target.
+
+### `--env-file .env` will not work, and the failure misleads
+
+Docker's env-file parser is not dotenv. It does not strip surrounding quotes and it does not strip
+the CR from CRLF line endings, both of which this repo's `.env` has. `PINECONE_API="pcsk_..."`
+therefore reaches the client as a key with literal quote characters, and Pinecone answers
+`401 UNAUTHENTICATED / Invalid API key` — which looks exactly like a revoked credential and sends
+you to the dashboard to rotate one that was fine.
+
+`docker compose` is unaffected: it reads `.env` for `${...}` substitution with a dotenv parser that
+does strip quotes, which is why `compose.yml` passes secrets through `environment:` rather than
+`env_file:`. Outside compose, pass them with `-e`, use the platform's secret store, or render a
+Docker-shaped file first:
+
+```bash
+python -c "from dotenv import dotenv_values; \
+  print('\n'.join(f'{k}={v}' for k, v in dotenv_values('.env').items() if v))" > .env.docker
+```
+
+### What `.dockerignore` keeps out, and why two entries matter
+
+`hr/` is the virtualenv and is **1.3 GB**; the conventional `venv/ .venv/ env/` lines miss it
+because this project's is named `hr/`. Without that line every build uploads 1.3 GB to the daemon
+before running an instruction.
+
+`data/*.db` is the audit log — every employee question and the answer they were given. `/api/audit`
+is admin-gated precisely because those rows are HR-sensitive, so baking one into a distributable
+image would hand out the thing the endpoint exists to protect.
+
+Root-level `*.md` is excluded and `README.md` re-included; `data/private_kb/*.md` survives, because
+Docker's `*` does not cross a path separator.
+
+### Deploying
+
+`APP_ENV=production` is the deployment switch and it does three things: withholds `/docs`, `/redoc`
+and `/openapi.json`, makes the admin key mandatory, and leaves `/health` open. **`create_app`
+refuses to build without `ADMIN_API_KEY` when `APP_ENV=production`**, so the container exits with a
+named error rather than coming up with an admin surface HR staff cannot use. A missing *provider*
+key is deliberately not fatal — `/health` reports `degraded` and names it, which is more use to a
+deploy than a container that exits before it can say why.
+
+Two things to decide before going public:
+
+- **The audit log needs a real volume.** It is SQLite at `/app/var/audit.db`. A platform with an
+  ephemeral filesystem (DigitalOcean App Platform, for one) loses it on every redeploy — which for
+  an HR audit trail is the failure the log exists to prevent. Use a Droplet with the named volume
+  above, or a managed database, or accept the loss knowingly.
+- **`/api/chat` is unauthenticated and every call costs tokens.** That is deliberate — employees ask
+  without logging in, and there is no identity to scope a conversation to — but a public URL with no
+  rate limit in front of it is a bill waiting to happen. Put the app behind a proxy that rate-limits
+  by IP before exposing it.
+
+---
+
 ## Repository layout
 
 Four layers. Each imports only from those above it, and nothing imports downward or from a script.
@@ -697,13 +808,17 @@ static/js/app.js          the console's behaviour -- no framework, no build step
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    228 tests over fakes -- no network, no credentials
+scripts/_cli.py           the preamble they share: console setup + a parser
+tests/                    230 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below
 step.md                   the 16-step build plan this project is working through
 docs/                     the reference brief, target architecture, generated graph
 req.txt                   pinned dependencies (requirements.txt forwards to it)
+Dockerfile                runtime image: non-root, CPU-only torch, model baked in
+docker-compose.yml        the one service that exists today, plus its volume
+.dockerignore             keeps hr/ (1.3 GB) and the audit log out of the context
 CLAUDE.md                 architecture notes and non-obvious constraints
 ```
 
@@ -888,7 +1003,7 @@ Two deliberate deviations from step.md, both already in the code:
 
 1. Feedback capture — a thumbs-up/down against an `audit_id`, and an admin view over it
 2. Document metadata in SQLite, so `/api/audit` can answer "which policy version said that?"
-3. Docker + DigitalOcean: FastAPI app, Nginx frontend, ingestion worker, SQLite volume
+3. DigitalOcean: the Nginx frontend and ingestion worker beside the app container
 4. Conversation memory, so follow-up questions resolve against the previous turn
 
 Done since: `/api/chat` over `Copilot.ask`, `/api/upload` for authorised HR staff, the SQLite audit

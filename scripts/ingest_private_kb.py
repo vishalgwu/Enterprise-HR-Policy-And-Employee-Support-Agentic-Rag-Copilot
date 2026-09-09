@@ -16,22 +16,17 @@ if __package__ in (None, ""):  # allow `python scripts/ingest_private_kb.py`
 
     sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import argparse
-
-from app.core.config import configure_logging, configure_stdout, get_settings
+from app.core.config import get_settings
 from app.rag.clients import embedding_dimension, get_embeddings
 from app.rag.ingest import ingest_directory
 from app.rag.vectorstore import delete_namespace, namespace_counts
+from scripts._cli import parser_for
 
 
 def main() -> None:
-    configure_stdout()
-    configure_logging()
     settings = get_settings()
 
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = parser_for(__doc__)
     parser.add_argument("--dir", default=None, help="source directory")
     parser.add_argument(
         "--namespace", default=None, help="target namespace (default: PRIVATE_NAMESPACE)"

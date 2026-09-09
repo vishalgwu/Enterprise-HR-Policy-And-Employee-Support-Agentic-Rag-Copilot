@@ -1,0 +1,75 @@
+# One service today, and the volume that outlives it.
+#
+#   docker compose up -d --build
+#   docker compose logs -f copilot
+#   docker compose down            # keeps the volume
+#   docker compose down -v         # deletes the audit log too
+#
+# **Secrets come from the environment, not from `env_file`.** Compose reads
+# `.env` for *variable substitution* (the `${...}` below) using a dotenv parser
+# that strips quotes, which is the behaviour this repo's `.env` is written for.
+# `env_file:` would take the opposite path -- it passes lines through with the
+# quotes and the CR from CRLF endings intact, and `PINECONE_API="pcsk_..."` then
+# reaches the client with literal quote characters and comes back as
+# `401 UNAUTHENTICATED / Invalid API key`. That looks exactly like a revoked
+# credential and sends you to rotate one that was fine. Observed here.
+#
+# The architecture in docs/ also names an Nginx frontend and a separate
+# ingestion worker. Neither is built yet, so neither is invented here: this file
+# describes what actually runs. Add them when they exist.
+
+services:
+  copilot:
+    build:
+      context: .
+    image: hr-copilot:latest
+    container_name: hr-copilot
+    restart: unless-stopped
+
+    ports:
+      # Host 8080 -> container $PORT. Behind a load balancer or Nginx, bind this
+      # to 127.0.0.1 so only the proxy can reach it.
+      - "${HOST_PORT:-8080}:8080"
+
+    environment:
+      # Substituted from the shell or from .env by compose's own dotenv parser.
+      # No defaults for the credentials on purpose: an empty value here is
+      # reported by /health as `degraded`, which is the honest outcome, whereas
+      # a placeholder default would look configured and fail at call time.
+      GROQ_API: ${GROQ_API:-}
+      TAVILY_API: ${TAVILY_API:-}
+      PINECONE_API: ${PINECONE_API:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PINECONE_INDEX: ${PINECONE_INDEX:-}
+      PRIVATE_NAMESPACE: ${PRIVATE_NAMESPACE:-hr-docs}
+      PUBLIC_NAMESPACE: ${PUBLIC_NAMESPACE:-public-web}
+
+      # `production` withholds /docs, /redoc and /openapi.json, and makes the
+      # admin key mandatory -- `create_app` refuses to build without one, so a
+      # misconfigured deployment fails loudly here rather than coming up with
+      # an admin surface nobody can use.
+      APP_ENV: ${APP_ENV:-production}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?set ADMIN_API_KEY -- APP_ENV=production refuses to start without it}
+
+      # Tracing uploads employee questions and retrieved policy to a third
+      # party. Off unless explicitly switched on, and redacted when on.
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-hr-copilot}
+
+    volumes:
+      # The audit log and uploaded documents. Everything else in the image is
+      # read-only to the app user, so this is the whole of its writable state.
+      - copilot-data:/app/var
+
+    # Inherited from the image; restated so `docker compose ps` shows health
+    # without anyone reading the Dockerfile.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+
+volumes:
+  copilot-data:

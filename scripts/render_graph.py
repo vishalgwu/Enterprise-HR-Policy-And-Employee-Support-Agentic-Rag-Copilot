@@ -16,13 +16,11 @@ if __package__ in (None, ""):  # allow `python scripts/render_graph.py`
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import argparse
-
 from langchain_core.runnables import Runnable
 
 from app.agent.diagram import graph_mermaid, save_graph_diagram, save_graph_png
 from app.agent.graph import build_graph
-from app.core.config import configure_logging, configure_stdout
+from scripts._cli import parser_for
 
 
 class _Unused(Runnable):
@@ -40,12 +38,8 @@ class _Unused(Runnable):
 
 
 def main() -> None:
-    configure_stdout()
-    configure_logging()
 
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = parser_for(__doc__)
     parser.add_argument(
         "--png",
         action="store_true",

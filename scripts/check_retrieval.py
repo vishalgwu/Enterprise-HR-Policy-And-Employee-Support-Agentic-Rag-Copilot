@@ -20,25 +20,20 @@ if __package__ in (None, ""):  # allow `python scripts/check_retrieval.py`
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-import argparse
-
-from app.core.config import configure_logging, configure_stdout, get_settings
+from app.core.config import get_settings
 from app.rag.clients import get_embeddings
 from app.rag.retrieval import get_kb_retriever, retrieve_with_scores
 from app.rag.vectorstore import namespace_counts
+from scripts._cli import parser_for
 
 DEFAULT_QUESTION = "How many PTO days do I get per year?"
 OUT_OF_DOMAIN = "What is the capital of France?"
 
 
 def main() -> None:
-    configure_stdout()
-    configure_logging()
     settings = get_settings()
 
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = parser_for(__doc__)
     parser.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
     parser.add_argument("--department", default=None)
     parser.add_argument("--doc-type", default=None)
