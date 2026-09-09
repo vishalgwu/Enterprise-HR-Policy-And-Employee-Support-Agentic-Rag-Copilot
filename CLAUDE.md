@@ -657,6 +657,27 @@ the corpus.
 
 ## Console notes
 
+**`#view-overview` is a claims page, and every number on it must be a measured one.** It states the
+retrieval benchmark figures (0.099 / 0.171 / the 0.15 gate, 0.078 after the KB grew), the labelled
+decision set (21/21), the corpus size (11 documents, 31 chunks, 9 areas) and the gates (228 tests,
+zero ruff findings) — all of which are also in the README, which is where they were measured. **They
+must be changed in both places together.** It is the one screen written for a reader who cannot
+check it against the code, which makes a stale figure there worse than a stale figure anywhere else
+in this repo: nobody reading it is in a position to notice.
+
+It is deliberately *not* admin-gated. It describes the system rather than exposing any of it, and
+the audience is someone evaluating the project, not operating it.
+
+The view needs no JavaScript: `showView` already switches on `.view` / `#view-<name>` and any
+`.rail__btn[data-view]`, so a static section and a rail button are the whole change. Keep it that
+way — a page of static prose is the last thing that should acquire a render path.
+
+**Hiding `.rail__label` below 560px removes the button's accessible name unless it has a `title`.**
+The rail buttons took their name from that span alone. Six destinations with words beside them do
+not fit a 375px bar, and the ones falling off the end were Theme and Key — unreachable, not merely
+cramped — so the labels are hidden at that width and every rail button now carries a `title`. Add a
+rail button and give it one.
+
 **The console is served from the same application, so there is no CORS middleware — deliberately.**
 `GET /` renders `templates/index.html` and the browser then calls `/api/*` same-origin. Adding a
 CORS middleware would widen the surface for a request nobody is making. If the target

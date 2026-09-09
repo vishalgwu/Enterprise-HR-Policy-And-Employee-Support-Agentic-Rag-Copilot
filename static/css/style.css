@@ -328,7 +328,7 @@ body[data-admin="off"] [data-admin-only] { display: none; }
 @keyframes view-in { from { opacity: 0; transform: translateY(8px); } }
 
 #view-chat { grid-template-columns: minmax(0, 1fr) var(--inspector); }
-#view-knowledge, #view-audit { grid-template-columns: minmax(0, 1fr); overflow: auto; }
+#view-knowledge, #view-audit, #view-overview { grid-template-columns: minmax(0, 1fr); overflow: auto; }
 
 /* ── Chat ────────────────────────────────────────────────────────────────── */
 
@@ -1351,6 +1351,258 @@ body[data-admin="off"] [data-admin-only] { display: none; }
 .toast--bad  { border-color: color-mix(in oklab, var(--bad) 45%, transparent); }
 .toast--info { border-color: color-mix(in oklab, var(--accent-2) 45%, transparent); }
 
+/* ── Overview (the project brief) ────────────────────────────────────────────
+   A reading view, not a working one: wider than the panes that hold a form or a
+   table, and typographic rather than dense. Everything here is built from the
+   same tokens as the rest of the console, so it follows the theme toggle
+   without a second palette.
+   ========================================================================== */
+
+.pane--wide { width: min(1000px, 100%); }
+
+.brief__kicker {
+  margin-bottom: 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+
+/* Headline numbers --------------------------------------------------------- */
+
+.brief__metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+  margin: 26px 0 34px;
+}
+
+.metric {
+  padding: 18px 18px 16px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.metric b {
+  display: block;
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.metric span {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* Problem / solution ------------------------------------------------------- */
+
+.brief__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+  margin-bottom: 38px;
+}
+
+.brief__card {
+  position: relative;
+  padding: 20px 22px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+/* The accent edge is decorative, so it is a pseudo-element rather than a
+   border -- a border here would shift the text by a pixel per card. */
+.brief__card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: linear-gradient(var(--accent), var(--accent-3));
+}
+.brief__card--alt::before { background: linear-gradient(var(--accent-2), var(--accent)); }
+
+.brief__card p { margin-top: 12px; font-size: 13.5px; line-height: 1.65; color: var(--text-2); }
+.brief__card b { color: var(--text); font-weight: 640; }
+
+.brief__tag {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 99px;
+  border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.brief__tag--alt {
+  border-color: color-mix(in oklab, var(--accent-2) 45%, transparent);
+  background: color-mix(in oklab, var(--accent-2) 14%, transparent);
+  color: var(--accent-2);
+}
+
+/* Section headings --------------------------------------------------------- */
+
+.brief__h {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+}
+.brief__lede {
+  margin: 0 0 18px;
+  max-width: 78ch;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.brief__foot {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--stroke-soft);
+  max-width: 78ch;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* Architecture flow -------------------------------------------------------- */
+
+.flow {
+  list-style: none;
+  margin: 0 0 38px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.flow__step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 16px 18px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.flow__n {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  color: var(--accent-ink);
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.flow__body b { font-size: 13.5px; font-weight: 660; }
+.flow__body p { margin-top: 5px; font-size: 13px; line-height: 1.6; color: var(--text-2); }
+
+/* STAR bullets ------------------------------------------------------------- */
+
+.star {
+  list-style: none;
+  margin: 0 0 38px;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.star__item {
+  padding: 20px 22px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.star__item h4 {
+  margin: 0 0 12px;
+  font-size: 14.5px;
+  font-weight: 680;
+  letter-spacing: -0.015em;
+}
+
+/* Each line is S / T / A / R plus its sentence. A two-column grid rather than a
+   float, so the second line of a long sentence stays aligned under the first
+   instead of wrapping back beneath the letter. */
+.star__item p {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  margin: 0 0 7px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+.star__item p:last-child { margin-bottom: 0; }
+
+.star__item i {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--stroke);
+  background: var(--bg-elev);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  font-style: normal;
+  /* text-2 rather than muted: at 11px on a panel these letters are the only
+     thing carrying the S/T/A/R structure, and muted drops them close to the
+     border in the light theme. */
+  color: var(--text-2);
+}
+/* Result is the half a reader skims for, so it is the one that is not grey. */
+.star__item p:last-child i { border-color: color-mix(in oklab, var(--good) 45%, transparent); color: var(--good); }
+.star__item p:last-child span { color: var(--text); }
+.star__item b { color: var(--text); font-weight: 660; }
+
+/* Technology --------------------------------------------------------------- */
+
+.stack {
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  background: var(--stroke-soft);
+  overflow: hidden;
+}
+
+.stack__row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+  padding: 13px 18px;
+  background: var(--bg-elev);
+}
+.stack__k {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.stack__v { display: flex; flex-wrap: wrap; gap: 6px; }
+
+@media (max-width: 640px) {
+  .stack__row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .flow__step { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 1080px) {
@@ -1384,7 +1636,16 @@ body[data-admin="off"] [data-admin-only] { display: none; }
 
   .topbar { padding: 9px 16px; }
   .topbar__sub, .chip--ver { display: none; }
-  .topbar__title { font-size: 14px; }
+  /* min-width:0 on the flex child, or the title cannot shrink below its
+     min-content width and a multi-word app name stacks one word per line --
+     five rows of heading above the conversation on a 375px screen. */
+  .topbar__id { min-width: 0; }
+  .topbar__title {
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .pill--health { max-width: 46vw; }
   .pill--health span:last-child {
     overflow: hidden;
@@ -1397,6 +1658,25 @@ body[data-admin="off"] [data-admin-only] { display: none; }
   .welcome__body { display: none; }
   .suggest { margin-top: 16px; gap: 7px; }
   .composer__hint { display: none; }
+}
+
+/* On a phone the rail is a horizontal bar, and the labels are what make it
+   overflow: six destinations with words beside them do not fit 375px, and the
+   ones that fall off the end are Theme and Key -- unreachable rather than
+   merely cramped. Icons only below this width. Every button keeps its title
+   attribute, and the rail nav keeps its aria-label, so nothing is lost to a
+   screen reader. */
+@media (max-width: 560px) {
+  .rail__label { display: none; }
+  .rail__btn { padding: 8px 10px; }
+  .rail__nav, .rail__foot { gap: 2px; }
+
+  /* At this width the topbar cannot hold all three, and the app name is the
+     one worth reading -- without this it truncates to a few characters while
+     an environment chip nobody is checking on a phone keeps its full width.
+     The environment is still on /health, which the pill beside it reports. */
+  .chip--env { display: none; }
+  .pill--health { max-width: 38vw; }
 }
 
 /* ── Reduced motion ──────────────────────────────────────────────────────── */

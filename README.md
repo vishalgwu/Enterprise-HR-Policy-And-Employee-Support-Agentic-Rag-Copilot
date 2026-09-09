@@ -31,7 +31,7 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
 | FastAPI service | `/health`, `/api/chat`, `/api/upload`, `/api/audit` implemented |
 | SQLite audit layer (question, answer, decisions, trace, latency) | Implemented |
-| Browser console — chat, workflow graph, trace, evidence, upload, audit | Implemented |
+| Browser console — chat, workflow graph, trace, evidence, upload, audit, project overview | Implemented |
 | Feedback capture | Not yet built |
 | Docker + DigitalOcean deployment | Not yet built |
 
@@ -138,13 +138,14 @@ this deployment carries no CORS middleware. No framework and no build step: one 
 stylesheet, one script, which is what lets the target architecture's Nginx container serve
 `static/` unchanged.
 
-Three views behind a rail: **Ask**, **Ingest** and **Audit**. The last two only appear when an admin
-key is configured — a courtesy, not the gate; `require_admin` refuses on every request regardless.
+Four views behind a rail: **Ask**, **Overview**, **Ingest** and **Audit**. The last two only appear
+when an admin key is configured — a courtesy, not the gate; `require_admin` refuses on every request
+regardless.
 
 **Ask** is the chat, with an inspector beside it that answers the question *"why should I believe
 this?"* three ways:
 
-- **Workflow** — the ten-node graph, with the path this answer actually took lit up and the edges
+- **Workflow** — the eleven-node graph, with the path this answer actually took lit up and the edges
   animated in the order they were traversed. The highlight is derived from the trace, so it cannot
   disagree with what ran. Underneath it, the route, both grades, the chunk count, the rewrite count
   and the round-trip latency.
@@ -157,6 +158,14 @@ this?"* three ways:
 
 The answer itself carries a badge naming its provenance in plain language — *internal policy*,
 *public web*, *no reliable evidence* — plus each grade and a chip per cited file.
+
+**Overview** is the project brief for a reader who will not open the code: the problem, the
+solution architecture as four stages, six pieces of work written as Situation → Task → Action →
+Result, and the technology behind each layer. **Every figure on it is a measured one** — the
+12-question retrieval benchmark, the labelled routing and grading set, the corpus counts, and the
+test and lint gates — and each is stated in this README as well. Change a number in one place and
+change it in the other: a stale claim there is worse than no page at all, because it is the one
+screen read by someone who cannot check it against the code.
 
 **Ingest** is a dropzone over `POST /api/upload`. A finished upload prints a receipt: file,
 department, namespace, chunk count and how many vectors the namespace now holds.

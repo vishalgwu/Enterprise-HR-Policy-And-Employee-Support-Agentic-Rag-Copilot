@@ -44,15 +44,19 @@
       </div>
 
       <nav class="rail__nav" aria-label="Sections">
-        <button class="rail__btn is-active" data-view="chat" aria-current="page">
+        <button class="rail__btn is-active" data-view="chat" aria-current="page" title="Ask a question">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.9 9.9 0 0 1-3.4-.6L3 21l1.9-4.9A8.2 8.2 0 0 1 3.6 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8.4 8.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
           <span class="rail__label">Ask</span>
         </button>
-        <button class="rail__btn" data-view="knowledge" data-admin-only>
+        <button class="rail__btn" data-view="overview" title="Project overview">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19.5V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 16v-3m4 3V9m4 7v-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3 19.5h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span class="rail__label">Overview</span>
+        </button>
+        <button class="rail__btn" data-view="knowledge" data-admin-only title="Add to the knowledge base">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span class="rail__label">Ingest</span>
         </button>
-        <button class="rail__btn" data-view="audit" data-admin-only>
+        <button class="rail__btn" data-view="audit" data-admin-only title="Audit log">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19V6a2 2 0 0 1 2-2h8l6 6v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 4v6h6M8 14h6M8 17h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           <span class="rail__label">Audit</span>
         </button>
@@ -302,6 +306,243 @@
               <p class="empty" id="sources-empty">No citations yet.</p>
             </div>
           </aside>
+        </section>
+
+        <!-- ══ OVERVIEW ══════════════════════════════════════════════════
+             A plain-language brief for a non-engineering reader: what the
+             problem was, what was built, and what was measured.
+
+             Every figure here is a measured one, sourced from README.md -- the
+             12-question retrieval benchmark, the labelled routing and grading
+             set, the corpus counts, and the test and lint gates. Nothing is
+             estimated. If a number changes, change it here and in the README
+             together: a stale claim on this page is worse than no page, because
+             this is the one screen read by someone who cannot check it against
+             the code.
+             ══════════════════════════════════════════════════════════════ -->
+        <section class="view" id="view-overview">
+          <div class="pane pane--wide">
+
+            <header class="pane__head">
+              <p class="brief__kicker">Project overview</p>
+              <h2>An HR copilot that will not invent policy</h2>
+              <p>
+                Built against the PeoplePrime brief in <code>docs/</code>. Everything below is
+                measured rather than asserted &mdash; the figures come from a 12-question retrieval
+                benchmark, a labelled routing and grading set, and the test suite.
+              </p>
+            </header>
+
+            <!-- Numbers -------------------------------------------------- -->
+            <div class="brief__metrics">
+              <div class="metric">
+                <b class="grad">21/21</b>
+                <span>routing &amp; grading decisions correct on a labelled set</span>
+              </div>
+              <div class="metric">
+                <b class="grad">0.15</b>
+                <span>similarity gate, set inside the measured 0.099&ndash;0.171 gap between out-of-domain and correct chunks</span>
+              </div>
+              <div class="metric">
+                <b class="grad">228</b>
+                <span>tests, offline, no credentials &mdash; ruff clean at zero findings</span>
+              </div>
+              <div class="metric">
+                <b class="grad">11 &rarr; 31</b>
+                <span>policy documents chunked, covering all 9 areas the brief names</span>
+              </div>
+            </div>
+
+            <!-- Problem and solution ------------------------------------- -->
+            <div class="brief__grid">
+              <article class="brief__card">
+                <span class="brief__tag">Problem</span>
+                <p>
+                  HR fields the same questions about leave, pay, notice periods and benefits every
+                  week. A general-purpose chatbot answers them from model memory &mdash; confidently,
+                  fluently, and sometimes wrongly. For an entitlement an employee is about to act on,
+                  a plausible invented answer is worse than no answer, and afterwards there is no
+                  record of what was said to whom.
+                </p>
+              </article>
+
+              <article class="brief__card brief__card--alt">
+                <span class="brief__tag brief__tag--alt">Solution</span>
+                <p>
+                  An <b>agentic</b> RAG system: an 11-node LangGraph agent that retrieves from an
+                  approved policy corpus, <b>grades its own evidence before answering</b>, rewrites
+                  the question and retries when retrieval was weak, falls back to cited web search,
+                  and &mdash; if nothing holds up &mdash; says so instead of guessing. Every answer
+                  carries its sources and the path the agent took to reach it.
+                </p>
+              </article>
+            </div>
+
+            <!-- Architecture --------------------------------------------- -->
+            <h3 class="brief__h">Solution architecture</h3>
+            <p class="brief__lede">
+              Four stages. The similarity gate and the evidence grader do different jobs and neither
+              replaces the other: the gate rejects out-of-domain <em>questions</em> before a model
+              call is spent, the grader rejects irrelevant <em>evidence</em> for questions that are
+              in domain.
+            </p>
+
+            <ol class="flow">
+              <li class="flow__step">
+                <span class="flow__n">1</span>
+                <div class="flow__body">
+                  <b>Ingest</b>
+                  <p>
+                    Markdown, TXT, PDF and DOCX &rarr; heading-aware chunking at 1000 characters with
+                    150 overlap &rarr; 384-dimension embeddings generated locally. Chunk IDs are
+                    deterministic, so re-ingesting an edited policy updates it in place, and
+                    withdrawn policy is pruned rather than left answering questions.
+                  </p>
+                </div>
+              </li>
+              <li class="flow__step">
+                <span class="flow__n">2</span>
+                <div class="flow__body">
+                  <b>Retrieve and gate</b>
+                  <p>
+                    Pinecone serverless with cosine similarity, internal policy and public content
+                    held in separate namespaces so one retrieval never mixes them. A raw-cosine gate
+                    at 0.15 drops out-of-domain questions before any model is called.
+                  </p>
+                </div>
+              </li>
+              <li class="flow__step">
+                <span class="flow__n">3</span>
+                <div class="flow__body">
+                  <b>Grade and decide</b>
+                  <p>
+                    An LLM judges whether the retrieved evidence actually answers the question, as a
+                    constrained <code>good</code> / <code>weak</code> decision rather than free text.
+                    Weak evidence triggers one query rewrite, then a web-search fallback, then an
+                    explicit admission that nothing covered it.
+                  </p>
+                </div>
+              </li>
+              <li class="flow__step">
+                <span class="flow__n">4</span>
+                <div class="flow__body">
+                  <b>Answer and record</b>
+                  <p>
+                    The answer arrives with its cited documents and a per-node execution trace, both
+                    shown in this console. Every question and decision is written to an audit log
+                    behind an admin key &mdash; the record HR needs to answer &ldquo;what was this
+                    person told, and on what basis?&rdquo;
+                  </p>
+                </div>
+              </li>
+            </ol>
+
+            <!-- STAR ------------------------------------------------------ -->
+            <h3 class="brief__h">What was built, and what it achieved</h3>
+            <p class="brief__lede">
+              Six pieces of work, each written as Situation &rarr; Task &rarr; Action &rarr; Result.
+            </p>
+
+            <ul class="star">
+              <li class="star__item">
+                <h4>Stopped the system answering from memory</h4>
+                <p><i>S</i><span>A single-pass RAG chatbot returns its top matches whatever it is asked, so a question the handbook does not cover still produces a fluent, sourceless answer about company policy.</span></p>
+                <p><i>T</i><span>Make &ldquo;internal policy does not cover this&rdquo; a real, reachable outcome rather than a fallback nobody wired up.</span></p>
+                <p><i>A</i><span>Built an 11-node LangGraph agent that grades retrieved evidence with a constrained LLM decision before generating, then rewrites the query and retries, then falls back to cited web search, then declines &mdash; each an explicit branch in the graph.</span></p>
+                <p><i>R</i><span><b>21 of 21 decisions correct</b> on a labelled set (router 16/16, grader 7/7). Every answer now resolves to a cited internal document, a cited URL, or an explicit refusal &mdash; and the console shows which.</span></p>
+              </li>
+
+              <li class="star__item">
+                <h4>Calibrated the relevance gate from measurement, not intuition</h4>
+                <p><i>S</i><span>Vector search always returns its top results, so an unrelated question such as &ldquo;what is the capital of France?&rdquo; still retrieves confident-looking HR chunks.</span></p>
+                <p><i>T</i><span>Find a threshold that rejects out-of-domain questions without discarding real ones, and be able to show why that number and not another.</span></p>
+                <p><i>A</i><span>Ran a 12-question benchmark across the corpus and measured similarity separately for correct-source, wrong-source and out-of-domain chunks, then placed the gate inside the observed gap.</span></p>
+                <p><i>R</i><span>Out-of-domain peaked at <b>0.099</b> against a weakest correct chunk of <b>0.171</b>, so a gate at <b>0.15</b> drops every out-of-domain result while losing no in-domain one. Re-measured after the corpus grew from 6 documents to 11: out-of-domain fell to <b>0.078</b>, so the calibration still holds.</span></p>
+              </li>
+
+              <li class="star__item">
+                <h4>Made the knowledge base safe for HR to update</h4>
+                <p><i>S</i><span>Policy arrives as Word files and PDFs and it changes; a superseded document left in the index keeps answering questions with withdrawn policy.</span></p>
+                <p><i>T</i><span>One ingestion path for every format, reconciling the search index against what is actually approved today.</span></p>
+                <p><i>A</i><span>Built a multi-format loader covering Markdown, TXT, PDF and DOCX including table content, with heading-aware chunking, deterministic chunk IDs, and orphan pruning on every corpus rebuild.</span></p>
+                <p><i>R</i><span><b>11 documents indexed as 31 chunks</b>, covering all <b>9</b> HR areas the brief names. An edited policy updates in place instead of duplicating, and a deleted one leaves the index. HR staff add documents through this console, admin-gated.</span></p>
+              </li>
+
+              <li class="star__item">
+                <h4>Made every answer auditable without leaking employee questions</h4>
+                <p><i>S</i><span>&ldquo;What did it tell someone about the notice period in March?&rdquo; is a question the business will eventually have to answer &mdash; and because the agent is not deterministic, re-running the question later proves nothing.</span></p>
+                <p><i>T</i><span>Record the decision trail at the moment of answering, while keeping HR questions inside the deployment.</span></p>
+                <p><i>A</i><span>Added a SQLite audit log capturing the question, answer, route, both grades, citations, the full node trace and latency, behind an admin-only API. Put third-party tracing behind an explicit switch that is off by default and payload-redacted when on.</span></p>
+                <p><i>R</i><span>Every answer is reconstructable from the log, with a grounded-answer rate that exposes a broken ingest or an exhausted quota from outside. Under default settings <b>no employee question leaves the deployment</b>.</span></p>
+              </li>
+
+              <li class="star__item">
+                <h4>Made a provider outage cost one source, not the answer</h4>
+                <p><i>S</i><span>The agent depends on three external services. Any one failing mid-question would abort the whole run and return an error to the employee.</span></p>
+                <p><i>T</i><span>Degrade gracefully rather than fail, and prove it without spending a paid API call to do so.</span></p>
+                <p><i>A</i><span>Wrapped every network call in a guard that converts a failure into a recorded fallback &mdash; a retrieval outage becomes &ldquo;no evidence&rdquo;, which routes to web search &mdash; and confined provider response shapes to one adapter module. Every client is injected, so the suite runs against fakes.</span></p>
+                <p><i>R</i><span><b>228 tests pass offline with no credentials</b> and <b>ruff reports zero findings</b>. An outage downgrades to an alternative source and is labelled degraded in the trace, so it is never mistaken for a genuine gap in policy.</span></p>
+              </li>
+
+              <li class="star__item">
+                <h4>Made the admin surface fail closed</h4>
+                <p><i>S</i><span>Whoever can upload to the knowledge base can change what company policy appears to say, and the audit log holds every employee&rsquo;s question and the answer they were given.</span></p>
+                <p><i>T</i><span>Ensure a misconfiguration turns the admin surface <em>off</em>, never open.</span></p>
+                <p><i>A</i><span>Gated upload and audit behind an API key with no default value and a constant-time comparison, enforced an upload size cap while the file streams, sanitised uploaded filenames, held secrets in redacting types, and kept provider error text out of every HTTP response.</span></p>
+                <p><i>R</i><span>With no key configured the admin endpoints refuse <b>every</b> request rather than accepting any. Production additionally withholds the API documentation and refuses to start without a key.</span></p>
+              </li>
+            </ul>
+
+            <!-- Stack ----------------------------------------------------- -->
+            <h3 class="brief__h">Technology</h3>
+            <div class="stack">
+              <div class="stack__row">
+                <span class="stack__k">Agent</span>
+                <div class="stack__v">
+                  <span class="tagline">LangGraph</span><span class="tagline">LangChain</span>
+                  <span class="tagline">Groq &middot; gpt-oss-20b</span><span class="tagline">Tavily search</span>
+                  <span class="tagline">Pydantic structured output</span>
+                </div>
+              </div>
+              <div class="stack__row">
+                <span class="stack__k">Retrieval</span>
+                <div class="stack__v">
+                  <span class="tagline">Pinecone serverless</span><span class="tagline">all-MiniLM-L6-v2</span>
+                  <span class="tagline">384-d local embeddings</span><span class="tagline">cosine + 0.15 gate</span>
+                  <span class="tagline">metadata filters</span>
+                </div>
+              </div>
+              <div class="stack__row">
+                <span class="stack__k">Ingestion</span>
+                <div class="stack__v">
+                  <span class="tagline">pypdf</span><span class="tagline">python-docx</span>
+                  <span class="tagline">BeautifulSoup</span><span class="tagline">recursive splitter</span>
+                </div>
+              </div>
+              <div class="stack__row">
+                <span class="stack__k">Service</span>
+                <div class="stack__v">
+                  <span class="tagline">FastAPI</span><span class="tagline">SQLite audit log</span>
+                  <span class="tagline">pydantic-settings</span><span class="tagline">Jinja2</span>
+                  <span class="tagline">vanilla JS console</span>
+                </div>
+              </div>
+              <div class="stack__row">
+                <span class="stack__k">Quality</span>
+                <div class="stack__v">
+                  <span class="tagline">pytest &middot; 228 offline</span><span class="tagline">ruff</span>
+                  <span class="tagline">LangSmith &middot; redacted</span><span class="tagline">Python 3.13</span>
+                </div>
+              </div>
+            </div>
+
+            <p class="brief__foot">
+              Providers are swappable without touching the agent: the chat model and the embedding
+              model are chosen independently, and both the Groq and the OpenAI paths are verified
+              against the live services.
+            </p>
+
+          </div>
         </section>
 
         <!-- ══ KNOWLEDGE ═════════════════════════════════════════════════ -->

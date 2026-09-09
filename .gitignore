@@ -21,6 +21,9 @@ dist/
 # Editors / IDEs
 .idea/
 .vscode/
+# Editor and tool workspace state, alongside .idea/ and .vscode/. launch.json
+# there hardcodes this machine's venv path, so it is not shareable.
+.claude/
 .cursor/
 
 # Local logs and scratch output
