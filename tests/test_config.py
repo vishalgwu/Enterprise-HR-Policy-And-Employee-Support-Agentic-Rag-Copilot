@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from conftest import settings_for
 from pydantic import ValidationError
 
 from app.core.config import Settings, get_settings, known_embedding_dim
@@ -429,3 +430,27 @@ def test_paths_default_under_the_project_root():
     s = Settings(_env_file=None)
     assert s.kb_dir == s.project_root / "data" / "private_kb"
     assert s.audit_db_path == s.project_root / "data" / "audit.db"
+
+
+# --- The suite's own isolation -----------------------------------------------
+
+
+def test_the_shared_settings_helper_is_isolated_from_a_real_env_file():
+    """`settings_for` must not read the developer's `.env`, ever.
+
+    This is the guarantee that makes "the suite needs no credentials" true
+    rather than lucky. It has already failed once: `tests/test_api.py` built
+    `Settings(**base)` without `_env_file=None` for three commits, so three
+    tests asserting an *unconfigured* admin surface passed only while
+    `ADMIN_API_KEY` happened to be empty in that file.
+
+    `admin_enabled` is the probe because it is the field a real `.env` most
+    plausibly fills in -- setting it is the ordinary way to use the admin UI --
+    and because the default is the security-relevant one: admin off. A helper
+    that leaked the file would report admin *on* here, on that developer's
+    machine and nowhere else.
+    """
+    assert settings_for().admin_enabled is False
+    assert settings_for(ADMIN_API_KEY="k").admin_enabled is True
+    # A field nothing overrides must still be the code's default, not a file's.
+    assert settings_for().langsmith_project == "hr-copilot"

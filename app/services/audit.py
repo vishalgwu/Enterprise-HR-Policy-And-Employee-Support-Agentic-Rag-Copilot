@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.config import Settings, get_logger, get_settings
+from app.core.config import get_logger
 from app.services.copilot import AnswerResult
 
 log = get_logger("audit")
@@ -294,9 +294,3 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             entry[column] = []
     entry["grounded"] = bool(entry.get("grounded"))
     return entry
-
-
-def get_audit_store(settings: Settings | None = None) -> AuditStore:
-    """An AuditStore over the configured database path."""
-    settings = settings or get_settings()
-    return AuditStore(settings.audit_db_path)

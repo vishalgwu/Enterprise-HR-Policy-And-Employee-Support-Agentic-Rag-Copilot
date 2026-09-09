@@ -176,10 +176,23 @@ def clean_process_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-@pytest.fixture
-def settings() -> Settings:
-    """Settings that never reach a real service."""
-    return Settings(
+def settings_for(**overrides: Any) -> Settings:
+    """Settings that never reach a real service, isolated from real config.
+
+    **`_env_file=None` is the whole point of this helper existing.** Without it
+    `Settings()` reads the developer's real `.env`, and every field the caller
+    did not override comes from that file -- so a test asserting a default
+    passes or fails by machine. It bit once already, in `tests/test_api.py`,
+    where three tests asserting an *unconfigured* admin surface passed only
+    while `ADMIN_API_KEY` happened to be empty locally; filling it in, an
+    ordinary thing to do to use the admin UI, broke them.
+
+    `clean_process_env` covers the other source a real process has, `os.environ`,
+    which outranks the file. Isolating from one and not the other is not
+    isolation: build Settings for a test through this helper, not by hand.
+    """
+    base: dict[str, Any] = dict(
+        _env_file=None,
         GROQ_API="test-groq",
         TAVILY_API="test-tavily",
         PINECONE_API="test-pinecone",
@@ -187,8 +200,5 @@ def settings() -> Settings:
         PRIVATE_NAMESPACE="test-hr-docs",
         PUBLIC_NAMESPACE="test-public",
     )
-
-
-@pytest.fixture
-def kb_docs() -> list[Document]:
-    return [kb_doc()]
+    base.update(overrides)
+    return Settings(**base)

@@ -50,11 +50,6 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
-# Output width of every embedding model this project knows about. Used to fill
-# `embedding_dim` when it is not set explicitly, and to reject a value that
-# contradicts the model. Getting this wrong is expensive: Pinecone cannot resize
-# an index, so the mismatch surfaces as an opaque upsert failure against an index
-# that then has to be recreated under a new name.
 # Field name -> the env var a user has to set. One map so an error message and
 # a health check cannot disagree about what to tell someone.
 SECRET_ALIASES: dict[str, str] = {
@@ -66,6 +61,11 @@ SECRET_ALIASES: dict[str, str] = {
     "langsmith_api_key": "LANGSMITH_API_KEY",
 }
 
+# Output width of every embedding model this project knows about. Used to fill
+# `embedding_dim` when it is not set explicitly, and to reject a value that
+# contradicts the model. Getting this wrong is expensive: Pinecone cannot resize
+# an index, so the mismatch surfaces as an opaque upsert failure against an index
+# that then has to be recreated under a new name.
 KNOWN_EMBEDDING_DIMS: dict[str, int] = {
     "sentence-transformers/all-MiniLM-L6-v2": 384,
     "sentence-transformers/all-mpnet-base-v2": 768,

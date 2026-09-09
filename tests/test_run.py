@@ -3,22 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from conftest import settings_for
 
-from app.core.config import Settings
 from run import describe, parse_args
-
-
-def settings_for(**overrides) -> Settings:
-    base = dict(
-        _env_file=None,
-        GROQ_API="g",
-        TAVILY_API="t",
-        PINECONE_API="p",
-        PINECONE_INDEX="test-index",
-    )
-    base.update(overrides)
-    return Settings(**base)
-
 
 # --- Arguments ---------------------------------------------------------------
 

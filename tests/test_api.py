@@ -7,11 +7,10 @@ the audit database is a file under tmp_path.
 
 from __future__ import annotations
 
-from conftest import FakeLLM, FakeRetriever, FakeWebSearch, kb_doc
+from conftest import FakeLLM, FakeRetriever, FakeWebSearch, kb_doc, settings_for
 from fastapi.testclient import TestClient
 
 from app.agent.graph import build_graph
-from app.core.config import Settings
 from app.main import create_app
 from app.rag.ingest import IngestReport
 from app.services.copilot import Copilot
@@ -20,20 +19,12 @@ ADMIN = {"X-Admin-Key": "secret-admin-key"}
 
 
 def client(copilot=None, **overrides) -> TestClient:
-    # `_env_file=None` is not tidiness. Without it `Settings()` reads the
-    # developer's real .env, and the tests asserting an *unconfigured* admin
-    # surface passed only while ADMIN_API_KEY happened to be empty there --
-    # filling it in broke three of them. A test asserting a default has to
-    # isolate from both config sources; `clean_process_env` covers the other.
-    base = dict(
-        _env_file=None,
-        GROQ_API="g",
-        TAVILY_API="t",
-        PINECONE_API="p",
-        PINECONE_INDEX="test-index",
-    )
-    base.update(overrides)
-    return TestClient(create_app(Settings(**base), copilot=copilot))
+    # Settings through `settings_for`, never `Settings(**base)` by hand: it is
+    # what carries `_env_file=None`, without which this whole file reads the
+    # developer's real .env. That is not hypothetical -- the three tests below
+    # asserting an *unconfigured* admin surface once passed only while
+    # ADMIN_API_KEY happened to be empty locally, and filling it in broke them.
+    return TestClient(create_app(settings_for(**overrides), copilot=copilot))
 
 
 def kb_copilot(**llm_kwargs) -> Copilot:
@@ -109,7 +100,7 @@ def test_building_the_app_touches_neither_network_nor_disk(tmp_path):
     """`app.main` builds an application at import. If that reached Pinecone or
     wrote the audit database, importing the module would do both."""
     db = tmp_path / "audit.db"
-    create_app(Settings(PINECONE_API="p", AUDIT_DB_PATH=db))
+    create_app(settings_for(AUDIT_DB_PATH=db))
     assert not db.exists()
 
 
@@ -151,7 +142,7 @@ def test_a_missing_static_directory_does_not_stop_the_app(tmp_path):
     """StaticFiles raises at mount time on a missing directory, which would turn
     "the assets were not copied into the image" into "the container does not
     start" -- and take /health down with it."""
-    app = create_app(Settings(PINECONE_API="p", STATIC_DIR=tmp_path / "nope"))
+    app = create_app(settings_for(STATIC_DIR=tmp_path / "nope"))
     assert TestClient(app).get("/health").status_code == 200
 
 

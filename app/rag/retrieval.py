@@ -12,11 +12,25 @@ from typing import Any
 from langchain_core.documents import Document
 
 from app.core.config import Settings, get_settings
-from app.rag.vectorstore import get_retriever, similarity_with_scores
+from app.rag.vectorstore import (
+    USE_CONFIGURED_GATE,
+    get_retriever,
+    similarity_with_scores,
+)
 
-# Sentinel meaning "use the configured gate". None is a meaningful value -- it
-# disables the gate -- so it cannot double as the default.
-USE_CONFIGURED_GATE = -1.0
+# Re-exported so a caller reaching for the sentinel has one name to import
+# alongside the retrievers it belongs to. It is *defined* in `vectorstore`,
+# where it is interpreted: two copies of a magic number are two chances for one
+# of them to be changed alone, and this one silently disables the gate.
+__all__ = [
+    "USE_CONFIGURED_GATE",
+    "build_filter",
+    "get_kb_retriever",
+    "get_public_retriever",
+    "kb_namespace",
+    "public_namespace",
+    "retrieve_with_scores",
+]
 
 
 def kb_namespace(settings: Settings | None = None) -> str:

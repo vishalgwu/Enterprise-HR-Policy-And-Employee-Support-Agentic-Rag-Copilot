@@ -156,15 +156,14 @@ class Copilot:
         _ = self.graph
 
 
-_copilot: Copilot | None = None
-
-
-def get_copilot() -> Copilot:
-    """Process-wide Copilot, for use as a FastAPI dependency."""
-    global _copilot
-    if _copilot is None:
-        _copilot = Copilot()
-    return _copilot
+# There is deliberately no module-level `get_copilot()` singleton here. It
+# existed, unused, and it was a second answer to a question this project has
+# already answered: the application's Copilot is built in `create_app` and read
+# off `app.state` by `app/api/deps.py`, and a CLI constructs its own
+# `Copilot(...)`. A process-wide global alongside those is not a shortcut, it is
+# a third wiring path that takes the process-wide Settings rather than the ones
+# its caller was given -- which is exactly the coupling the injection everywhere
+# else in this codebase exists to avoid.
 
 
 # --- Console rendering -------------------------------------------------------

@@ -20,7 +20,12 @@ import argparse
 
 import uvicorn
 
-from app.core.config import configure_logging, configure_stdout, get_settings
+from app.core.config import (
+    Settings,
+    configure_logging,
+    configure_stdout,
+    get_settings,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,7 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def describe(settings) -> list[str]:
+def describe(settings: Settings) -> list[str]:
     """The handful of facts worth seeing in the terminal before the first request.
 
     Everything here is also on `/health`; this is the same information at the

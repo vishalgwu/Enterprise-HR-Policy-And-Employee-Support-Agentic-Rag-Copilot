@@ -23,6 +23,13 @@ from app.rag.loaders import chunk_id
 
 log = get_logger("vectorstore")
 
+# Sentinel for `get_retriever(score_threshold=...)` meaning "use the configured
+# gate". Not None, because None is a meaningful value there -- it disables the
+# gate entirely -- so it cannot double as "unset". Defined here rather than in
+# `retrieval.py` because this is the module that *interprets* it; a caller that
+# spells the bare -1.0 is relying on a number, not on a contract.
+USE_CONFIGURED_GATE = -1.0
+
 
 @lru_cache(maxsize=1)
 def get_pinecone_client():
@@ -125,18 +132,6 @@ def ensure_index(
     return pc
 
 
-def namespace_count(
-    namespace: str,
-    pc: Any = None,
-    index_name: str | None = None,
-    settings: Settings | None = None,
-) -> int:
-    settings = settings or get_settings()
-    pc = pc or get_pinecone_client()
-    stats = pc.Index(_index_name(index_name, settings)).describe_index_stats()
-    return ((stats.get("namespaces") or {}).get(namespace) or {}).get("vector_count", 0)
-
-
 def namespace_counts(
     pc: Any = None, index_name: str | None = None, settings: Settings | None = None
 ) -> dict[str, int]:
@@ -148,6 +143,22 @@ def namespace_counts(
         name: (info or {}).get("vector_count", 0)
         for name, info in (stats.get("namespaces") or {}).items()
     }
+
+
+def namespace_count(
+    namespace: str,
+    pc: Any = None,
+    index_name: str | None = None,
+    settings: Settings | None = None,
+) -> int:
+    """Vector count for one namespace, or 0 when it holds nothing yet.
+
+    One `describe_index_stats` call either way, so this reads the shared
+    unpacking rather than repeating it -- Pinecone reports the counts for every
+    namespace in a single response, and two spellings of that response shape are
+    two things to fix when the SDK changes one of them.
+    """
+    return namespace_counts(pc, index_name, settings).get(namespace, 0)
 
 
 def wait_for_vectors(
@@ -297,7 +308,7 @@ def to_relevance_scale(raw_cosine: float) -> float:
 def get_retriever(
     namespace: str,
     k: int | None = None,
-    score_threshold: float | None = -1.0,
+    score_threshold: float | None = USE_CONFIGURED_GATE,
     embedding: Any = None,
     metadata_filter: dict[str, Any] | None = None,
     index_name: str | None = None,
@@ -305,16 +316,15 @@ def get_retriever(
 ):
     """Retriever over one namespace, optionally filtered by metadata.
 
-    `score_threshold` is a *raw cosine* value. The sentinel -1.0 means "use the
-    configured gate"; None disables the gate and always returns k chunks. -1.0
-    rather than None as the sentinel because None is a meaningful value here.
+    `score_threshold` is a *raw cosine* value. `USE_CONFIGURED_GATE` means "use
+    the configured gate"; None disables the gate and always returns k chunks.
 
     `metadata_filter` is a Pinecone filter expression, e.g.
     `{"department": {"$eq": "payroll"}}` or `{"doc_type": {"$in": ["pdf"]}}`.
     """
     settings = settings or get_settings()
     k = k or settings.default_k
-    if score_threshold == -1.0:
+    if score_threshold == USE_CONFIGURED_GATE:
         score_threshold = settings.relevance_threshold
 
     vectorstore = get_vectorstore(namespace, embedding, index_name, settings)

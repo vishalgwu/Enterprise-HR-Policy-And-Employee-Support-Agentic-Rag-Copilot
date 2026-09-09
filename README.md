@@ -25,7 +25,7 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 227 tests, no network, no credentials | Implemented |
+| Test suite — 228 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
@@ -588,7 +588,7 @@ python run.py                         # start the API and the console on :8000
 python run.py --reload                # development
 python run.py --port 8080             # override API_PORT for one run
 
-pytest                                # 227 tests, no network, no credentials
+pytest                                # 228 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -688,7 +688,7 @@ static/js/app.js          the console's behaviour -- no framework, no build step
 app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
-tests/                    227 tests over fakes -- no network, no credentials
+tests/                    228 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below

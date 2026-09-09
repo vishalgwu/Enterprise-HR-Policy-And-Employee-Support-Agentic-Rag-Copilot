@@ -23,7 +23,7 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 227 tests, offline, no credentials needed
+pytest                                 # 228 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
@@ -329,8 +329,11 @@ type maps raw cosine `c` to `(c + 1) / 2`. Passing a raw cosine straight through
 `0.15` would be interpreted as raw cosine `-0.70`. `to_relevance_scale` does the conversion so
 callers can think in raw cosine, which is what `retrieve_with_scores` reports.
 
-**`get_retriever(score_threshold=...)` uses `-1.0` as its sentinel, not `None`.** `None` is a
-meaningful value there — it disables the gate — so it cannot also mean "use the default".
+**`get_retriever(score_threshold=...)` uses `USE_CONFIGURED_GATE` (`-1.0`) as its sentinel, not
+`None`.** `None` is a meaningful value there — it disables the gate — so it cannot also mean "use the
+default". The constant lives in `app/rag/vectorstore.py`, the module that *interprets* it, and
+`app/rag/retrieval.py` re-exports it; it was briefly spelled in both, which is two chances for one
+copy to be changed alone, and the failure that produces is a silently disabled gate.
 
 **The 0.15 threshold is an out-of-domain gate, not a relevance grader.** Measured over a
 12-question eval: out-of-domain questions peaked at 0.099, the lowest correct-source chunk scored
@@ -550,11 +553,23 @@ environment, so the test still reads local configuration and passes or fails by 
 helper built `Settings(**base)` without `_env_file=None`, so the whole API suite read the
 developer's real `.env`. Three tests asserting an *unconfigured* admin surface passed only because
 `ADMIN_API_KEY` happened to be empty there; filling it in — an ordinary thing to do to use the admin
-UI — broke them, and the suite's claim to need no `.env` was simply false. The helper now passes
-`_env_file=None`, and `clean_process_env` clears `ADMIN_API_KEY` too, because
-`ADMIN_API_KEY=k python run.py` leaves it exported for the rest of that shell. Verify a change here
-the way it was verified: run the suite once normally, once with `ADMIN_API_KEY=leaked-from-shell`
-set. Both must pass.
+UI — broke them, and the suite's claim to need no `.env` was simply false. `clean_process_env`
+clears `ADMIN_API_KEY` too, because `ADMIN_API_KEY=k python run.py` leaves it exported for the rest
+of that shell.
+
+**It was then broken a second time, in `tests/conftest.py`, by the fixture that was supposed to be
+the fix.** The shared `settings` fixture built `Settings(...)` with no `_env_file=None` and so read
+the developer's real `.env` — measured on this machine, it reported `admin_enabled` True and
+`langsmith_project` `'Hr-agentic-ai'` instead of the code defaults. It survived because *nothing
+used it*: every caller had written its own correct helper, so the broken one sat in the file that
+new tests copy from. **`conftest.settings_for(**overrides)` is now the one way to build Settings in
+a test**, it carries `_env_file=None`, and `tests/test_api.py` and `tests/test_run.py` call it
+rather than keeping private copies. `test_the_shared_settings_helper_is_isolated_from_a_real_env_file`
+pins it and fails against the old fixture. Do not build a bare `Settings(...)` in a new test unless
+it sets every field the assertion depends on.
+
+Verify a change here the way it was verified: run the suite once normally, once with
+`ADMIN_API_KEY=leaked-from-shell` set, and once with `.env` moved aside. All three must pass.
 
 `pyproject.toml` sets `pythonpath = [".", "tests"]`, which is how `tests/test_graph.py` imports
 `conftest` directly. Do **not** add `tests/__init__.py` — it turns the directory into a package and
@@ -572,6 +587,14 @@ up to the HTTP layer: `create_app(settings, copilot=..., audit=...)` is how the 
 offline against a graph of fakes and a `tmp_path` database. **Do not wire production through
 `dependency_overrides`** — it is a test hook, and once the app uses it there is no way to tell which
 overrides are the application and which are the test.
+
+**There is no module-level `get_copilot()` or `get_audit_store()`, and there must not be.** Both
+existed with no callers. Each was a *second* answer to a question already answered by the paragraph
+above: the application's services are built in `create_app` and read off `app.state`, and a CLI
+constructs its own `Copilot(...)`. A process-wide singleton beside those is a third wiring path that
+quietly takes the process-wide `Settings` rather than the ones its caller was handed — exactly the
+coupling the injection everywhere else exists to avoid. `app/__init__.py` advertised `get_copilot`
+in its docstring, so the one documented route into this layer was the wrong one.
 
 **Nothing `create_app` builds touches the network or the disk.** `Copilot` compiles its graph on
 first use and `AuditStore` creates its schema on first use, because `app.main` builds an application
