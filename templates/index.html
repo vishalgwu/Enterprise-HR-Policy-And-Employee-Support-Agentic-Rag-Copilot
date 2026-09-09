@@ -481,7 +481,7 @@
                 <p><i>S</i><span>The agent depends on three external services. Any one failing mid-question would abort the whole run and return an error to the employee.</span></p>
                 <p><i>T</i><span>Degrade gracefully rather than fail, and prove it without spending a paid API call to do so.</span></p>
                 <p><i>A</i><span>Wrapped every network call in a guard that converts a failure into a recorded fallback &mdash; a retrieval outage becomes &ldquo;no evidence&rdquo;, which routes to web search &mdash; and confined provider response shapes to one adapter module. Every client is injected, so the suite runs against fakes.</span></p>
-                <p><i>R</i><span><b>228 tests pass offline with no credentials</b> and <b>ruff reports zero findings</b>. An outage downgrades to an alternative source and is labelled degraded in the trace, so it is never mistaken for a genuine gap in policy.</span></p>
+                <p><i>R</i><span><b>230 tests pass offline with no credentials</b> and <b>ruff reports zero findings</b>. An outage downgrades to an alternative source and is labelled degraded in the trace, so it is never mistaken for a genuine gap in policy.</span></p>
               </li>
 
               <li class="star__item">

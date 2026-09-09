@@ -44,6 +44,98 @@ The reference brief and target architecture this is built against are in
 [docs/](docs/): `Enterprise_HR_Agentic_RAG_Problem_Statement_DigitalOcean.pdf` and
 `architecture.png`.
 
+## What was built, and what it achieved
+
+Six pieces of work, each as Situation → Task → Action → Result. Every figure is measured — the
+12-question retrieval benchmark, the labelled routing and grading set, the corpus counts, and the
+test and lint gates — and each is derived below in its own section.
+
+These are also rendered in the console's **Overview** view, so a reader who opens the running app
+sees the same claims as a reader who opens this file. **Change a number here and change it in
+[templates/index.html](templates/index.html) in the same commit** — that page is the one written for
+someone who cannot check it against the code.
+
+---
+
+**1. Stopped the system answering from memory**
+
+- **S** — A single-pass RAG chatbot returns its top matches whatever it is asked, so a question the
+  handbook does not cover still produces a fluent, sourceless answer about company policy.
+- **T** — Make "internal policy does not cover this" a real, reachable outcome rather than a
+  fallback nobody wired up.
+- **A** — Built an 11-node LangGraph agent that grades retrieved evidence with a constrained LLM
+  decision before generating, then rewrites the query and retries, then falls back to cited web
+  search, then declines — each an explicit branch in the graph.
+- **R** — **21 of 21 decisions correct** on a labelled set (router 16/16, grader 7/7). Every answer
+  now resolves to a cited internal document, a cited URL, or an explicit refusal — and the console
+  shows which.
+
+**2. Calibrated the relevance gate from measurement, not intuition**
+
+- **S** — Vector search always returns its top results, so an unrelated question such as *"what is
+  the capital of France?"* still retrieves confident-looking HR chunks.
+- **T** — Find a threshold that rejects out-of-domain questions without discarding real ones, and be
+  able to show why that number and not another.
+- **A** — Ran a 12-question benchmark across the corpus and measured similarity separately for
+  correct-source, wrong-source and out-of-domain chunks, then placed the gate inside the observed
+  gap.
+- **R** — Out-of-domain peaked at **0.099** against a weakest correct chunk of **0.171**, so a gate
+  at **0.15** drops every out-of-domain result while losing no in-domain one. Re-measured after the
+  corpus grew from 6 documents to 11: out-of-domain fell to **0.078**, so the calibration still
+  holds.
+
+**3. Made the knowledge base safe for HR to update**
+
+- **S** — Policy arrives as Word files and PDFs and it changes; a superseded document left in the
+  index keeps answering questions with withdrawn policy.
+- **T** — One ingestion path for every format, reconciling the search index against what is actually
+  approved today.
+- **A** — Built a multi-format loader covering Markdown, TXT, PDF and DOCX including table content,
+  with heading-aware chunking, deterministic chunk IDs, and orphan pruning on every corpus rebuild.
+- **R** — **11 documents indexed as 31 chunks**, covering all **9** HR areas the brief names. An
+  edited policy updates in place instead of duplicating, and a deleted one leaves the index. HR
+  staff add documents through the console, admin-gated.
+
+**4. Made every answer auditable without leaking employee questions**
+
+- **S** — *"What did it tell someone about the notice period in March?"* is a question the business
+  will eventually have to answer — and because the agent is not deterministic, re-running the
+  question later proves nothing.
+- **T** — Record the decision trail at the moment of answering, while keeping HR questions inside
+  the deployment.
+- **A** — Added a SQLite audit log capturing the question, answer, route, both grades, citations,
+  the full node trace and latency, behind an admin-only API. Put third-party tracing behind an
+  explicit switch that is off by default and payload-redacted when on.
+- **R** — Every answer is reconstructable from the log, with a grounded-answer rate that exposes a
+  broken ingest or an exhausted quota from outside. Under default settings **no employee question
+  leaves the deployment**.
+
+**5. Made a provider outage cost one source, not the answer**
+
+- **S** — The agent depends on three external services. Any one failing mid-question would abort the
+  whole run and return an error to the employee.
+- **T** — Degrade gracefully rather than fail, and prove it without spending a paid API call to do
+  so.
+- **A** — Wrapped every network call in a guard that converts a failure into a recorded fallback — a
+  retrieval outage becomes "no evidence", which routes to web search — and confined provider
+  response shapes to one adapter module. Every client is injected, so the suite runs against fakes.
+- **R** — **230 tests pass offline with no credentials** and **ruff reports zero findings**. An
+  outage downgrades to an alternative source and is labelled degraded in the trace, so it is never
+  mistaken for a genuine gap in policy.
+
+**6. Made the admin surface fail closed**
+
+- **S** — Whoever can upload to the knowledge base can change what company policy appears to say,
+  and the audit log holds every employee's question and the answer they were given.
+- **T** — Ensure a misconfiguration turns the admin surface *off*, never open.
+- **A** — Gated upload and audit behind an API key with no default value and a constant-time
+  comparison, enforced an upload size cap while the file streams, sanitised uploaded filenames, held
+  secrets in redacting types, and kept provider error text out of every HTTP response.
+- **R** — With no key configured the admin endpoints refuse **every** request rather than accepting
+  any. Production additionally withholds the API documentation and refuses to start without a key.
+
+---
+
 ## The agent graph
 
 Eleven nodes, wired in [app/agent/graph.py](app/agent/graph.py) over bodies in
