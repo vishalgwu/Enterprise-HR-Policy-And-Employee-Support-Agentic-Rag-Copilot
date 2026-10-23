@@ -16,6 +16,19 @@ and verified end to end (`Dockerfile`, `.dockerignore`, `docker-compose.yml`); t
 deployment itself, and the Nginx frontend and ingestion worker the target architecture names, are
 not.
 
+Around that core sit the production layers, all complete and all documented under `docs/`: hybrid
+retrieval with re-ranking, a supervisor-worker team, a ReAct loop over a tool registry, input and
+output guards with PII redaction, role-based authorization, a human-in-the-loop approval queue,
+loop budgets, an idempotency ledger, a semantic cache, model routing with a cost projection,
+in-process span tracing, SSE streaming, caller-supplied provider keys, and a rate limiter. A Vercel
+deployment target exists (`api/`, `vercel.json`) and answers with no credentials at all.
+
+**Six topic documents under `docs/` carry the reasoning**: `rag.md`, `multi-agent.md`,
+`production.md`, `safety.md`, `reliability.md`, `agent-patterns.md`, plus `deploy-vercel.md`. They
+are written for someone evaluating the project and every number in them is measured here. If you
+change a behaviour one of them describes, change the document in the same commit — they are the
+only description of several of these decisions that a reader will find.
+
 ## Environment and commands
 
 Windows-first. The virtualenv lives in `hr/` (Python 3.13, created from Anaconda) and is
@@ -25,13 +38,15 @@ self-ignored via `hr/.gitignore`.
 hr\Scripts\activate                    # PowerShell / cmd
 pip install -r req.txt                 # req.txt is the source of truth; requirements.txt is "-r req.txt"
 
-pytest                                 # 230 tests, offline, no credentials needed
+pytest                                 # 652 tests, offline, no credentials needed
 python -m ruff check app scripts tests run.py ingest_sample_kb.py    # must be clean
 
 python scripts/ingest_private_kb.py    # data/private_kb/** -> "hr-docs"
 python scripts/ingest_public_web.py    # scraped article     -> "public-web"
 python scripts/demo.py                 # four demos, one per graph path
 python scripts/check_retrieval.py      # gated vs ungated retrieval scores
+python scripts/eval_decisions.py       # router + grader against a labelled set
+python scripts/eval_decisions.py --fewshot   # the FEWSHOT_GRADING A/B
 python scripts/inspect_document.py     # load + chunk one file, offline, no keys
 python scripts/render_graph.py         # regenerate docs/agent-graph.md
 python run.py                          # uvicorn on :8000
@@ -69,25 +84,56 @@ Lowest first; each layer imports only from those above it, and **nothing imports
 |---|---|
 | `app/core/logging_config.py` | `LOGGER_NAME`, `get_logger`, `configure_logging`, `configure_stdout` |
 | `app/core/config.py` | `Settings`, plus a re-export of the logging names. No heavy imports. |
+| `app/core/tracing.py` | `Tracer` / `Span` — the in-process span tree. No dependency, no network |
 | `app/rag/clients.py` | embeddings (cached), chat model, Tavily search — the only place providers branch |
 | `app/rag/loaders.py` | markdown/text/PDF/DOCX/web loading, chunking, chunk ids, evidence rendering |
+| `app/rag/lexical.py` | BM25 over the KB on disk. No keys, no network, no model |
 | `app/rag/vectorstore.py` | Pinecone, parameterised by **index and namespace** |
+| `app/rag/rerank.py` | lexical and LLM re-rankers over a wider candidate list |
+| `app/rag/hybrid.py` | RRF fusion; `build_retriever` is **the** door every caller uses |
 | `app/rag/ingest.py` | load → chunk → embed → upsert → reconcile, for any corpus |
 | `app/rag/retrieval.py` | the private KB and public corpus, namespaces already chosen |
 | `app/agent/schemas.py` | decision models and `AgentState` |
 | `app/agent/prompts.py` | every prompt |
 | `app/agent/decisions.py` | router and grader, with recovery |
+| `app/agent/budgets.py` | `Budget` — six ceilings per run, shared and mutable |
+| `app/agent/memory.py` | the windowed conversation and its compaction |
 | `app/agent/nodes.py` | node bodies, as closures |
 | `app/agent/graph.py` | wiring and compilation |
+| `app/agent/tools.py` | the tool registry machinery. **Knows nothing about this product** |
+| `app/agent/react.py` | a minimal ReAct loop over that registry |
+| `app/agent/supervisor.py` | the supervisor-worker graph: delegate, hand off, escalate, compose |
 | `app/services/ingestion.py` | load -> chunk -> index, as one door. A facade over `rag`, never a second loader |
+| `app/services/state_db.py` | one SQLite file for working state; the schema lives here |
+| `app/services/pii.py` | find and redact personal data |
+| `app/services/guardrails.py` | `InputGuard` and `OutputGuard` over that |
+| `app/services/authorization.py` | three roles, one deny-by-default `POLICY` table |
+| `app/services/approval.py` | the human-in-the-loop queue |
+| `app/services/scratchpad.py` | shared working notes, per conversation |
+| `app/services/memory_store.py` | long-term facts, closed key set, pseudonymised subject |
+| `app/services/idempotency.py` | the ledger that stops a retry happening twice |
+| `app/services/cache.py` | the semantic answer cache |
+| `app/services/routing.py` | complexity → tier → model, `MODEL_CATALOG`, cost projection |
+| `app/services/extractive.py` | answering from retrieved text with no model at all |
+| `app/services/streaming.py` | server-sent events; `EventStream`, `stream_in_thread` |
+| `app/services/byok.py` | caller-supplied provider keys and the client pool |
+| `app/services/ratelimit.py` | a token bucket in front of the deployment's own key |
+| `app/services/toolbox.py` | the real tools, assembled where the services live |
+| `app/services/pipeline.py` | `AnswerPipeline` — the eleven stages around the graph |
 | `app/services/copilot.py` | `Copilot` facade and `AnswerResult` — the API contract |
 | `app/services/audit.py` | `AuditStore` — the SQLite record of every answered question |
-| `app/api/deps.py` | what a route depends on, read off `app.state` |
+| `app/api/deps.py` | what a route depends on; `require_admin` and `require_action` |
 | `app/api/routes.py` | the `ops` (`/health`) and `api` (`/api/*`) routers |
 | `app/main.py` | `create_app` — builds the app, wires services onto `app.state`, mounts `/static` |
-| `templates/index.html` | the console, one Jinja2 page |
-| `static/css/style.css` | tokens, components, both themes |
-| `static/js/app.js` | the console's behaviour; no framework, no build step |
+| `api/index.py` | the Vercel entry point. The same ASGI app and nothing else |
+| `templates/index.html` | the console shell and all eight views, one Jinja2 page |
+| `static/css/style.css` | tokens, shell, components, both themes |
+| `static/css/views.css` | per-view styles |
+| `static/js/dom.js` | element building and the markdown renderer. **No `innerHTML`, anywhere** |
+| `static/js/api.js` | fetch wrappers, key storage, the SSE reader |
+| `static/js/graph.js` | layered layout, drawn from `/api/graph` |
+| `static/js/charts.js` | donut, bars and percentiles, hand-built from SVG |
+| `static/js/app.js` | bootstrap; one further module per view |
 | `scripts/_cli.py` | the preamble every script shares: console setup, then a parser |
 | `scripts/*` | thin CLI callers |
 
@@ -682,20 +728,30 @@ the corpus.
 
 ## Console notes
 
-**`#view-overview` is a claims page, and every number on it must be a measured one.** It states the
-retrieval benchmark figures (0.099 / 0.171 / the 0.15 gate, 0.078 after the KB grew), the labelled
-decision set (21/21), the corpus size (11 documents, 31 chunks, 9 areas) and the gates (230 tests,
-zero ruff findings) — all of which are also in the README, which is where they were measured. **They
-must be changed in both places together.** It is the one screen written for a reader who cannot
-check it against the code, which makes a stale figure there worse than a stale figure anywhere else
-in this repo: nobody reading it is in a position to notice.
+**`#view-pipeline` is a claims page, and every number on it must be a measured one.** It states the
+retrieval benchmark figures (0.099 / 0.171 / 0.521 / the 0.15 gate, 0.078 after the KB grew), the
+labelled decision set (21/21), the labelled complexity set (14/14), the corpus size (11 documents,
+31 chunks, 9 areas) and the gates (652 tests, zero ruff findings) — all of which are also in the
+README, which is where they were measured. **They must be changed in both places together.** It is
+the one screen written for a reader who cannot check it against the code, which makes a stale
+figure there worse than a stale figure anywhere else in this repo: nobody reading it is in a
+position to notice.
+
+`test_every_figure_the_console_claims_also_appears_in_the_readme` in `tests/test_console.py` is now
+the gate on exactly that. It is weak on purpose — it asserts each figure appears in both files, not
+that it means the same thing in both — because the strong version would need the two pages to share
+a data source, and a page of static prose is the last thing that should acquire a render path.
+`CLAIMED_FIGURES` lists them, so adding a claim to the page means adding it there, which is the
+moment to ask whether it was measured.
 
 It is deliberately *not* admin-gated. It describes the system rather than exposing any of it, and
-the audience is someone evaluating the project, not operating it.
+the audience is someone evaluating the project, not operating it. The same reasoning is why
+`/api/metrics` is open and `/api/audit` is not.
 
-The view needs no JavaScript: `showView` already switches on `.view` / `#view-<name>` and any
-`.rail__btn[data-view]`, so a static section and a rail button are the whole change. Keep it that
-way — a page of static prose is the last thing that should acquire a render path.
+The view needs no JavaScript: `switchTo` in `static/js/app.js` switches on `.view` / `#view-<name>`
+and any `.rail__btn[data-view]`, so a static section plus a rail button is the whole change. There
+is a test asserting the two lists agree, because a button with no section blanks the page and a
+section with no button is unreachable, and both are silent.
 
 **Hiding `.rail__label` below 560px removes the button's accessible name unless it has a `title`.**
 The rail buttons took their name from that span alone. Six destinations with words beside them do
@@ -753,10 +809,16 @@ the `INLINE` alternation so `**x**` wins over `*x*`. A table gets its own `overf
 a wide one must not make the whole conversation scroll sideways.
 
 **The graph highlight is derived from the trace, not from a second source of truth.** `TRACE_NODE`
-in `app.js` maps a trace entry's tag (`"KB Retriever"`, `"Generate/Web"`) to a node id, and
-consecutive visited nodes are exactly the edges traversed — including `rewrite -> retrieve`, the
-loop. Renaming a tag in `note()` calls in `app/agent/nodes.py` silently stops lighting that node, so
-change both together.
+in `static/js/graph.js` maps a trace entry's tag (`"KB Retriever"`, `"Generate/Web"`) to a node id,
+and consecutive visited nodes are exactly the edges traversed — including `rewrite -> retrieve`, the
+loop, which is why the path keeps duplicates rather than de-duplicating them. Renaming a tag in a
+`note()` call in `app/agent/nodes.py` or `app/agent/supervisor.py` still stops lighting that node,
+so change both together; a token-overlap fallback in `nodeForTag` makes the miss cosmetic rather
+than silent, but it is still a miss.
+
+The *shape* of the diagram no longer drifts, though: it is laid out from `/api/graph`, which serves
+the same constants `build_graph` and `build_supervisor_graph` wire from. A node added to either
+graph appears in the console with no JavaScript change at all.
 
 ## Docker notes
 
@@ -818,6 +880,275 @@ a platform with an ephemeral filesystem loses it on every redeploy -- for an HR 
 the failure the log exists to prevent. And `/api/chat` is unauthenticated by design, so a public URL
 with no rate limit in front of it is a bill waiting to happen. Both are in the README's *Deploying*
 section; neither is something to silently "fix" in the Dockerfile.
+
+## The pipeline around the graph
+
+`app/services/pipeline.py` is eleven stages in a fixed order, and the order is the design. Read the
+module docstring before changing it; the short version is that a guard after the cache could poison
+it, a router before the cache pays for a classification it did not need, and an output guard before
+generation guards nothing.
+
+**`Copilot` is a facade over `AnswerPipeline`, not the pipeline itself.** `copilot.py` also defines
+`AnswerResult`, which is the API contract, and a contract sharing a file with three hundred lines of
+orchestration is a contract nobody reads. `Copilot.pipeline` imports `AnswerPipeline` **inside the
+property** because `pipeline.py` imports `AnswerResult` from `copilot.py` — a module-scope import
+there is a cycle, and `app/services/audit.py` must be able to import the contract without pulling in
+the guards, the cache and the router to write a row.
+
+**`Copilot.ask_graph_only` exists because every claim about the pipeline is a difference from it.**
+"The cache saved 40% of calls" and "routing did not hurt grounding" are both measured against the
+bare graph, and a codebase that cannot run the thing it is comparing to has numbers nobody can
+check.
+
+**A graph is compiled per run, not cached.** Compiling the `StateGraph` is microseconds; what is
+expensive is the retriever, which loads an embedding model, and that is built once on
+`AnswerPipeline` and shared. Compiling per run is what lets every request have its own `Tracer` — a
+tracer bound into a cached graph collects every question's spans into one list for the life of the
+process.
+
+**`AnswerPipeline.adopt_services` is how an injected copilot gets the application's stores.**
+`create_app` is the composition root; a `Copilot(graph=...)` built by a test or a CLI defaults to a
+private semantic cache and no scratchpad, and left alone that produces two confusing behaviours in
+the assembled app — `/api/cache/invalidate` drops a cache nothing reads from, and an answer comes
+back with no scratchpad because the pipeline has a different one from the endpoint that wrote to it.
+`adopt_services` fills only what *defaulted*, tracked by `self._injected`, so a caller that passed
+its own keeps it.
+
+**`if self.cache` is wrong; `if self.cache is not None` is right.** `SemanticCache` defines
+`__len__`, so an empty cache is falsy — which meant the truth test skipped both the lookup and the
+store, so the cache could never fill and therefore never became truthy. It read as "the cache is
+off" with every setting saying it was on. The same trap waits for any store that grows a `__len__`.
+
+**Token counts are estimated at the pipeline, not measured.** LangChain surfaces usage metadata
+inconsistently across providers and not at all through a compiled graph's final state, so `_finish`
+counts characters that went in and out and divides by `CHARS_PER_TOKEN`. That is about ±20% on
+English prose, which is the right accuracy for a ceiling and a dashboard and the wrong accuracy for
+reconciling a bill. `/api/metrics` returns `cost_is_projected: true` so a reader does not have to
+know that.
+
+**Do not charge the graph's nodes against the budget.** `build_nodes` takes a `budget` and passes it
+to `build_retriever` (which gates the LLM re-ranker on it) but never charges it. Charging there
+would need `estimate_tokens`, which lives in `app/services/routing.py` — and the agent layer may not
+import the service layer. The pipeline charges once, in `_finish`, from the span count and the text
+lengths.
+
+
+## Multi-agent notes
+
+**Hard rules live in the branch functions, not in the prompt.** `SUPERVISOR_PROMPT` asks the model
+not to consult the same worker twice and to try private documents before the web; `delegate_after_
+supervise` in `app/agent/supervisor.py` *enforces* both, plus the forced stop at `max_handoffs`. A
+prompt instruction is a suggestion. The branch is the rule.
+
+**Four keys on `SupervisorState` accumulate through the `add` reducer** — `trace`, `worker_path`,
+`findings` and `handoffs` — and every one of them is seeded by `initial_supervisor_state`. A plain
+TypedDict key is *replaced* by whatever a node returns, so without the reducer each worker would
+erase the previous one's finding and the composer would see one. `test_the_accumulating_keys_are_
+appended_to_rather_than_overwritten` fails with `assert 1 == 3` if a reducer is removed; it was
+verified by removing them.
+
+**Web-before-private is a redirect, not a refusal.** The rule is "private first", not "never web",
+so a first-hop request for `web` becomes the first unconsulted private worker rather than being
+dropped.
+
+**Worker department filters are applied only for departments the corpus is actually filed under.**
+All eleven files in `data/private_kb/` sit in the root, so `load_directory` stamps every chunk
+`department="general"`. An unconditional per-worker filter would return **zero chunks for five of
+the six specialists** and look exactly like an empty knowledge base. `_foldered_departments()` does
+one `iterdir` and the filter appears only when the corpus grows subdirectories.
+
+**`test_every_worker_domain_names_documents_that_exist` asserts the eleven files are claimed exactly
+once between the six workers.** Adding a KB document without claiming it fails a test, which is the
+point: a document no worker owns is a document the supervisor can never reach.
+
+**`AGENT_MODE=auto` only reaches for the supervisor on a `complex` question**, because a supervisor
+run is one planning call, one delegation call per hop, one generation per worker and a composition.
+That is why `classify_complexity` being accurate matters more than it looks — see below.
+
+
+## Routing and cost
+
+**The complexity classifier was measurably inverted, and the fix is the interesting part.**
+`ARITHMETIC` was one tuple of phrases, any match promoting to `complex`. Measured against the
+console's own suggested questions, it marked "How many days of paid time off do full-time employees
+get?" complex — the single most ordinary HR question there is, routed to the deep model and, on
+`auto`, to the supervisor — while marking "I'm a contractor going on parental leave mid-notice, what
+am I owed?" standard. Wrong in both directions at once.
+
+It is now `ARITHMETIC_STRONG` (unambiguous comparison and calculation markers, promoting alone),
+`ARITHMETIC_WEAK` (interrogatives, promoting only with a second signal or in a question of some
+size) and `POPULATION` (a population the corpus does not describe — contractor, intern, probation —
+which is the strongest single-area signal there is, because the documents say "employees" and
+whether that covers a contractor is precisely the judgement the grader is recorded as finding
+borderline). `LABELLED_COMPLEXITY` in `tests/test_routing.py` is the table: 14/14 now, 10/13 before.
+
+**`"accrue"` and `"accrual"` are deliberately *not* in the `pay` policy area.** They look like
+payroll words and in this corpus accrual is a leave concept — "full-time employees accrue 20 days of
+paid time off". Filing them under pay made every ordinary PTO question report two policy areas and
+route to the deep model, for a reason no reader of the question would recognise.
+
+**Prices in `MODEL_CATALOG` are published list prices and they move.** They are a projection for a
+ceiling and a dashboard, not an invoice. Groq's free tier bills nothing and caps tokens per *day*
+instead. An unknown model prices at `0.0` and logs at WARNING naming it — a silent zero is
+indistinguishable from "we are on the free tier", so it is said out loud.
+
+
+## Safety notes
+
+**Prompt injection is flagged and neutralised, not refused.** The prompts are already
+retrieval-grounded, "ignore previous instructions" is a thing a confused employee genuinely types,
+and a refusal teaches an attacker exactly which phrasing tripped it while costing a real user their
+answer. The instruction-like span is replaced with `[instruction removed]`, the verdict is recorded
+at `severity="high"`, and refusal is reserved for a message that is *only* an attack.
+
+**General off-topic questions are not refused either.** The router and the similarity gate classify
+"what is the capital of France?" better than a keyword list ever will, and a list that refuses it
+makes the product feel broken. `"off_topic"` stays in the vocabulary and is never produced; there is
+a test pinning that.
+
+**Regex PII detection catches structured identifiers and free text not at all.** There is no pattern
+for "I need leave because my father has dementia", and pretending otherwise is worse than having
+nothing, because it invites the assumption that a redacted question is a safe question. The output
+guard and the `escalate` path exist because of that gap.
+
+**False positives are the expensive failure in `pii.py`, not misses.** The redacted question is what
+the model is actually asked, so a pattern that eats "20 days" or "Form 16" out of an HR question
+corrupts the question. Hence mandatory separators on phone numbers, Luhn validation on cards, and
+label anchoring on passports and dates of birth. The trailing lookahead was `(?![\w.-])`, which
+refused every phone number at the end of a sentence — most of them; it is now `(?![\w-])(?!\.\d)`.
+
+**An answer containing a credential is blocked entirely, not redacted.** An answer shown with a hole
+in it where a key was is an answer that already had the key in it once.
+
+**`fingerprint_subject` is salted with the admin key, and the reason is not hypothetical.** An
+unsalted sha256 of an IPv4 address is trivially reversible — there are four billion of them.
+
+**`ApprovalStore.request` returning `None` means the approval was not recorded, so the caller must
+refuse.** This is the one place the swallow-and-log contract is inverted, and the tempting reading
+of `None` is "carry on". `ToolRegistry.call` fails closed on it.
+
+**`escalate_to_human` deliberately does not need approval while `raise_ticket` does.** Escalating
+*is* asking for a human; requiring a human to approve the request for a human is a loop with nobody
+in it.
+
+**Nothing untrusted reaches `innerHTML`, and the word does not appear in `static/js/`.** `el()`
+throws on an `html` option rather than ignoring it, so the unsafe operation is not available and
+there is no escaping step that can be forgotten. The admin reading the audit log is exactly the
+session worth stealing.
+
+
+## Reliability notes
+
+**A budget is a stopping condition, not an error.** `allows()` is the graceful path the agent loops
+ask; `charge()` raising is for an inner call with nowhere to degrade to. An employee asking about
+parental leave gets the partial answer, labelled partial by `BUDGET_STOPPED_NOTE` — an answer that
+ran out of room and does not say so is indistinguishable from a complete one that happened to be
+short.
+
+**The degradation ladder, in order**: Pinecone unavailable → BM25 over the same documents on disk;
+no evidence → web search; web weak → rewrite and retry; still weak → admit it; generation fails but
+retrieval succeeded → an extractive answer from the retrieved text rather than an apology; no model
+at all → the extractive path is the whole product; no Tavily key → `_NoWebSearch` returns the empty
+shape so the graph takes the same path it takes when the web had nothing. The extractive path is
+**structurally incapable of inventing a policy number**, which makes the worst-case answer the most
+trustworthy one in the system.
+
+**`build_retriever` never raises.** Dense failure → lexical; lexical failure in hybrid mode → dense
+alone; both unavailable → an empty BM25 index whose `invoke` returns `[]`, which the graph already
+routes to the web fallback. An explicit `dense` on a keyless deployment degrades too, for the same
+reason `effective_retrieval_mode` degrades an impossible `dense`.
+
+**A timed-out side-effecting tool call does not release its idempotency claim.** The timeout bounds
+*our wait*, not the work — the worker thread may still be performing the side effect — so releasing
+would let a retry duplicate it. The 60-second stall window decides when it is safe to re-win.
+
+**The in-memory idempotency ledger is per process and is not a distributed lock.** It says so. On
+Vercel each function instance has its own, which bounds what the `raise_ticket` guarantee is worth
+there; the approval gate in front of it is doing most of the work.
+
+
+## The design system
+
+**One accent colour and a warm neutral ramp. That is the whole palette.** An
+earlier version put a violet-to-mint gradient on the wordmark, the headings,
+the stat figures and the primary buttons. Beyond taste it had a specific
+problem: when six things are highlighted, nothing is. An interface for reading
+HR policy needs the *answer* to be the brightest thing on screen and the accent
+reserved for the one control the reader should press next, so the accent now
+marks exactly three things — the active destination, the primary action, and a
+live indicator. Gradients appear nowhere. Do not reintroduce one for a hero
+heading.
+
+The neutrals are warm (a brown-black, not a blue-black) because this sits
+beside a document all day. Pure `#000` and pure `#fff` are both absent.
+
+**Tokens are named for their job, not their hue**: `--chart-1`, not
+`--violet`; `--node-visited`, not `--mint`. `static/js/charts.js` reads the
+chart tokens and `templates/index.html` reads the node tokens from inline
+styles, so a token named after a colour cannot be rebranded without editing
+three files — which is how a palette ends up half-changed. It already did once.
+
+**The assistant's answer is not in a bubble, and the employee's question is.**
+That asymmetry is deliberate. A bubble is a speech act and is right for the
+thing a person typed; the answer is a *document* — several paragraphs, often a
+list or a table, meant to be read and checked against its sources. A tinted
+rounded rectangle makes a policy answer look like a chat message, caps its
+measure at whatever the bubble is, and leaves a wide table fighting a rounded
+corner. `views.css` opens with this argument; read it before putting the answer
+back in a box.
+
+**The serif is confined to headings, the wordmark and the big figures.** Below
+about 15px it stops being legible and starts being decoration, which is why
+`.card__head h3` and `h4` are explicitly switched back to the sans.
+
+**`/static` is served with `Cache-Control: no-cache`** — see
+`_RevalidatingStatic` in `app/main.py`. The console is nine ES modules that
+import each other by bare path, so there is no build step to hash a filename
+with and a `?v=` on the entry point does not reach what it imports. Without the
+header a browser applies heuristic freshness and a deploy half-applies: new
+markup against an old stylesheet, which reads as a broken build rather than as
+a cache. The caveat is in the docstring: it only governs clients that fetch
+*after* it is in place.
+
+
+## Console and API notes, added with the production layers
+
+**`EventStream.emit(event, /, **data)` takes its first argument positionally only.** The payload is
+`**data` and a stage event's most natural field is `name`, which collided with the parameter and
+raised "got multiple values for argument 'name'" from inside a feature whose job is to be invisible.
+
+**The dashboard stops polling when it is not the visible view.** A dashboard left open in a
+background tab otherwise asks a serverless deployment for metrics every fifteen seconds for the rest
+of the day, which on a per-invocation platform is a bill for a page nobody is looking at.
+
+**`/api/metrics` is open and `/api/audit` is not, and the line between them is load-bearing.** An
+audit row is one employee's question and the answer they got. An aggregate is not. Keep anything
+that could emit a question, an answer or a policy chunk on the gated side; there is a test asserting
+a question asked through `/api/chat` does not appear in `/api/metrics`. Per-model spend is the one
+aggregate withheld without `metrics.read`.
+
+
+## Vercel notes
+
+`api/index.py`, `api/requirements.txt`, `vercel.json` and `.vercelignore` are the deployment
+surface; `docs/deploy-vercel.md` is the guide. Three things matter here.
+
+**Nothing heavy may import at module scope.** `import app.main` currently reaches only `fastapi`,
+`pydantic`, `pydantic-settings`, `langchain-core`, `langchain-text-splitters`, `langgraph` and
+`jinja2`. Every provider SDK is imported inside the function that builds its client. A module-scope
+`import langchain_huggingface` anywhere under `app/` removes this deployment target silently,
+because `api/requirements.txt` omits `sentence-transformers` — which pulls torch, far over a 250 MB
+function limit.
+
+**`api/requirements.txt` beats the root `requirements.txt`** on this platform, which is the only
+reason the root file can keep pinning torch for the container. Both pin the same versions; two files
+pinning one dependency to two versions is how a bug reproduces in one deployment and not the other.
+
+**`/tmp` is the only writable path**, so `AUDIT_DB_PATH`, `STATE_DB_PATH` and `UPLOAD_DIR` must be
+pointed there — and the audit log therefore does not survive a redeploy. For a product whose audit
+log exists to answer "what did it tell someone in March?", that is the failure the log exists to
+prevent, and it is written down rather than discovered. The rate limiter, the semantic cache and the
+idempotency ledger are per-instance there for the same structural reason.
 
 ## The build plan
 

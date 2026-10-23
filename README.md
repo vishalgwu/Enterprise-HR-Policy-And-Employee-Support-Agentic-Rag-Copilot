@@ -2,14 +2,41 @@
 
 An internal HR assistant built as an **agentic** retrieval-augmented generation system: instead of
 answering from a single retrieval pass, it scores what it retrieves, rejects out-of-domain matches,
-and is designed to fall back to query rewriting and web search rather than hallucinate policy.
+and falls back to query rewriting and web search rather than hallucinate policy.
+
+Around that sits the part that makes it a product rather than a demo — guardrails, a semantic cache,
+model routing, loop budgets, a tool registry, a supervisor-worker team, an approval queue and a
+cost model — and the part that makes it something a stranger can try: it answers with **no API keys
+at all**, from BM25 over the policy documents on disk.
 
 Built as a Forward Deployed Engineer (FDE) style project — taking a RAG workflow from notebook
-experiment to a measured, reproducible ingestion and retrieval layer.
+experiment to a measured, reproducible system with the failure modes written down.
+
+---
+
+## Documentation
+
+Six topic documents, each grounded in the code and carrying the measurements behind its claims.
+
+| Document | Covers |
+|---|---|
+| [docs/rag.md](docs/rag.md) | Chunking, embeddings, vector search, hybrid search, re-ranking, few-shot examples, RAG vs fine-tuning vs long context, knowledge base sizing |
+| [docs/multi-agent.md](docs/multi-agent.md) | Supervisor-worker, handoff and escalation, shared state, when to split |
+| [docs/production.md](docs/production.md) | Model routing, semantic caching, streaming and latency, horizontal scaling, cost projection |
+| [docs/safety.md](docs/safety.md) | Input filtering, output filtering and PII, authorization, human-in-the-loop |
+| [docs/reliability.md](docs/reliability.md) | Loop budgets, graceful degradation and fallbacks, idempotency |
+| [docs/agent-patterns.md](docs/agent-patterns.md) | ReAct loop, tool registry, error handling, memory, retries and timeouts, budgets, approval, tracing, routing, caching, parallel tools |
+| [docs/deploy-vercel.md](docs/deploy-vercel.md) | Deploying the public demo, and what does not work on a serverless platform |
+
+The reference brief and target architecture this is built against are also in
+[docs/](docs/): `Enterprise_HR_Agentic_RAG_Problem_Statement_DigitalOcean.pdf` and
+`architecture.png`.
 
 ---
 
 ## Status
+
+### The retrieval and agent core
 
 | Layer | State |
 |---|---|
@@ -18,31 +45,57 @@ experiment to a measured, reproducible ingestion and retrieval layer.
 | Namespace isolation between the two corpora | Implemented |
 | Retrieval + out-of-domain gating | Implemented, evaluated on 12 questions, re-verified after the KB grew |
 | Private KB covering all nine areas the brief names | 11 documents, 31 chunks |
+| Hybrid retrieval — BM25 + dense, fused with RRF, then re-ranked | Implemented, degrades to either side alone |
+| Lexical-only mode — BM25 on disk, no keys, no network | Implemented, verified with every credential removed |
 | Groq LLM client (`openai/gpt-oss-20b`, temperature 0) | Implemented, live call verified |
 | Tavily web-search client | Implemented, live call verified |
 | Structured routing + evidence grading | Implemented, 21/21 on a labelled set |
 | LangGraph agent (11 nodes: contextualise → route → grade → rewrite → fallback → answer) | Implemented, all paths verified |
-| Per-node decision trace and citations carried in agent state | Implemented, surfaced on `AnswerResult` |
+| Supervisor-worker team (6 specialists, handoff, escalation, shared scratchpad) | Implemented, compiled graph asserted against its documented edge set |
+| ReAct loop over a tool registry | Implemented |
+| Extractive answering with no language model | Implemented, verified keyless end to end |
 | Multi-format ingestion (Markdown, TXT, PDF, DOCX) | Implemented |
 | Metadata filtering (`department`, `doc_type`) | Implemented |
-| Test suite — 230 tests, no network, no credentials | Implemented |
+
+### The production layers around it
+
+| Layer | State |
+|---|---|
+| Input guard — injection neutralised, secrets caught, unsafe refused | Implemented |
+| PII detection and redaction before a question travels | Implemented, 13 identifier types |
+| Output guard — echoed PII redacted, credentials blocked, ungrounded figures flagged | Implemented |
+| Role-based authorization — employee / HR / admin, deny-by-default table | Implemented |
+| Human-in-the-loop approval queue, single-shot decisions, expiry | Implemented |
+| Loop budgets — steps, tool calls, model calls, tokens, wall clock, cost | Implemented |
+| Idempotency ledger with an atomic claim and a stall window | Implemented |
+| Semantic cache — exact then embedding, high threshold, short TTL | Implemented, dropped on ingest |
+| Model routing — heuristic complexity → tier → model | Implemented, 14/14 on a labelled set |
+| Cost projection from published list prices | Implemented, reported as a projection |
+| In-process span tracing, payload-redacted by default | Implemented, rendered in the console |
+| Streaming answers over SSE | Implemented, same answer as the posted endpoint |
+| Bring your own key — per-caller provider credentials, pooled, never stored | Implemented |
+| Rate limiting on the deployment's own key | Implemented, honest about being per-process |
+| Test suite — 652 tests, no network, no credentials | Implemented |
 | Lint gate — `ruff` over `app/`, `scripts/`, `tests/` | Implemented, passes with zero findings |
 | LangSmith tracing, redacted by default | Implemented, verified against the live service |
 | Swappable providers — Groq/OpenAI LLM, local/OpenAI embeddings | Implemented, both paths verified live |
-| FastAPI service | `/health`, `/api/chat`, `/api/upload`, `/api/audit` implemented |
-| SQLite audit layer (question, answer, decisions, trace, latency) | Implemented |
-| Browser console — chat, workflow graph, trace, evidence, upload, audit, project overview | Implemented |
-| Feedback capture | Not yet built |
+
+### The surfaces
+
+| Layer | State |
+|---|---|
+| FastAPI service | `/health`, `/api/chat`, `/api/chat/stream`, `/api/config`, `/api/graph`, `/api/tools`, `/api/metrics`, `/api/scratchpad`, `/api/approvals`, `/api/upload`, `/api/audit` |
+| SQLite audit layer (question, answer, decisions, trace, spans, model, tokens, cost, latency) | Implemented |
+| Browser console — ask, dashboard, agents, pipeline, knowledge, approvals, audit, settings | Implemented |
 | Docker image + compose — non-root, CPU-only torch, model baked in | Implemented, built and run |
+| Vercel deployment — slim bundle, keyless demo mode | Implemented, [documented](docs/deploy-vercel.md) |
 | DigitalOcean deployment | Not yet built |
+| Feedback capture | Not yet built |
 
-The agent graph runs end to end behind an HTTP surface and a browser console: employees ask at `/`,
-HR staff upload policy through the same UI, and every answered question is written to a SQLite audit
-log the console renders. What remains is feedback capture and packaging.
-
-The reference brief and target architecture this is built against are in
-[docs/](docs/): `Enterprise_HR_Agentic_RAG_Problem_Statement_DigitalOcean.pdf` and
-`architecture.png`.
+The agent runs end to end behind an HTTP surface and a browser console: employees ask at `/`, HR
+staff upload policy and work the approval queue through the same UI, and every answered question is
+written to a SQLite audit log the console renders. What remains is feedback capture and the
+DigitalOcean deployment the brief names.
 
 ## What was built, and what it achieved
 
@@ -119,7 +172,7 @@ someone who cannot check it against the code.
 - **A** — Wrapped every network call in a guard that converts a failure into a recorded fallback — a
   retrieval outage becomes "no evidence", which routes to web search — and confined provider
   response shapes to one adapter module. Every client is injected, so the suite runs against fakes.
-- **R** — **230 tests pass offline with no credentials** and **ruff reports zero findings**. An
+- **R** — **652 tests pass offline with no credentials** and **ruff reports zero findings**. An
   outage downgrades to an alternative source and is labelled degraded in the trace, so it is never
   mistaken for a genuine gap in policy.
 
@@ -684,13 +737,15 @@ python scripts/ingest_public_web.py   # scrape the public article -> "public-web
 python scripts/demo.py                # four demos, one per path
 python scripts/demo.py 2              # just demo 2
 python scripts/check_retrieval.py     # what retrieval returns, gated and ungated
+python scripts/eval_decisions.py      # router + grader against a labelled set
+python scripts/eval_decisions.py --fewshot   # the FEWSHOT_GRADING A/B
 python scripts/inspect_document.py    # load + chunk one file, offline, no keys
 python scripts/render_graph.py        # regenerate docs/agent-graph.md
 python run.py                         # start the API and the console on :8000
 python run.py --reload                # development
 python run.py --port 8080             # override API_PORT for one run
 
-pytest                                # 230 tests, no network, no credentials
+pytest                                # 652 tests, no network, no credentials
 python -m ruff check app scripts tests run.py ingest_sample_kb.py
 ```
 
@@ -864,9 +919,57 @@ Two things to decide before going public:
   an HR audit trail is the failure the log exists to prevent. Use a Droplet with the named volume
   above, or a managed database, or accept the loss knowingly.
 - **`/api/chat` is unauthenticated and every call costs tokens.** That is deliberate — employees ask
-  without logging in, and there is no identity to scope a conversation to — but a public URL with no
-  rate limit in front of it is a bill waiting to happen. Put the app behind a proxy that rate-limits
-  by IP before exposing it.
+  without logging in, and there is no identity to scope a conversation to. There is now a token
+  bucket in front of the deployment's own key (`RATE_LIMIT_PER_MINUTE`, exempting callers spending
+  their own key and authenticated admins), but it is per-process: behind a load balancer the
+  effective limit is instances × rate, and `stats()` reports `"scope": "process"` so a dashboard
+  does not claim otherwise. A real limit belongs in front of the application.
+
+---
+
+## Vercel
+
+The container is where this belongs; Vercel is where it is demonstrable. One function serves the
+console, the API and the static assets, and the full guide — including what does not work and why —
+is in [docs/deploy-vercel.md](docs/deploy-vercel.md).
+
+```bash
+vercel link && vercel --prod
+```
+
+Three things make it fit, and all three are properties of the codebase rather than of the config:
+
+**Nothing heavy imports at module scope.** `import app.main` reaches only `fastapi`, `pydantic`,
+`pydantic-settings`, `langchain-core`, `langchain-text-splitters`, `langgraph` and `jinja2`. Every
+provider SDK is imported inside the function that builds its client, so `api/requirements.txt` can
+omit `sentence-transformers` — which pulls torch, measured at 769 MB on the CPU index against a
+250 MB function limit. A module-scope `import langchain_huggingface` anywhere under `app/` would
+remove this deployment target silently.
+
+**It answers with no keys at all.** With no Pinecone and no provider credentials,
+`effective_retrieval_mode` resolves to `lexical` and the pipeline answers from BM25 over the eleven
+markdown files plus the extractive path. Verified with every credential removed:
+
+```
+has_llm: False | vector_store: False | retrieval: lexical
+"How many days of paid time off do full-time employees get?"
+  -> mode: extractive, source: private_kb
+  -> sources: leave-and-time-off.md, payroll-and-compensation.md
+"What is the capital of France?"
+  -> insufficient_evidence
+```
+
+Those answers read worse than generated ones and are more trustworthy: nothing wrote them, so
+nothing can have invented a number. That is the free tier of this demo, and it cannot run up a bill.
+
+**A visitor can bring their own key.** Paste an OpenAI or Groq key into the console's Settings page
+and your questions are answered on your account, at whatever model you pick, with no shared-key
+limit. The key builds one chat client, is pooled by a hash of itself, and never reaches the audit
+log, a span, a log line, the vector index or the web search — only the chat model.
+
+Two honest limits on this platform: `/tmp` is the only writable path, so **the audit log does not
+survive a redeploy**, and the rate limiter, the semantic cache and the idempotency ledger are all
+per-instance. [docs/deploy-vercel.md](docs/deploy-vercel.md) lists each one with its fix.
 
 ---
 
@@ -876,41 +979,77 @@ Four layers. Each imports only from those above it, and nothing imports downward
 
 ```
 app/core/config.py        Settings (pydantic-settings), logging, console setup
-app/rag/clients.py        embeddings (cached), Groq chat model, Tavily search
+app/core/tracing.py       in-process span tree, payload-redacted, no dependency
+app/rag/clients.py        embeddings (cached), chat model, web search, response adapters
 app/rag/loaders.py        markdown/text/PDF/DOCX/web loading, chunking, chunk ids
+app/rag/lexical.py        BM25 over the KB on disk -- no keys, no network
 app/rag/vectorstore.py    Pinecone, parameterised by index *and* namespace
+app/rag/hybrid.py         RRF fusion of dense + sparse; build_retriever is the one door
+app/rag/rerank.py         lexical and LLM re-rankers over a wider candidate list
 app/rag/ingest.py         load -> chunk -> embed -> upsert -> reconcile, for any corpus
 app/rag/retrieval.py      the private KB and public corpus, namespaces already chosen
-app/agent/schemas.py      routing/grading decision models, AgentState
+app/agent/schemas.py      decision models, AgentState
 app/agent/prompts.py      every prompt, including the two calibrated ones
 app/agent/decisions.py    router and grader + recovery from structured-output failures
+app/agent/budgets.py      five ceilings per run; a stopping condition, not an error
+app/agent/memory.py       the windowed conversation and its compaction
 app/agent/nodes.py        node bodies, as closures over injectable clients
 app/agent/graph.py        wiring and compilation
+app/agent/supervisor.py   the supervisor-worker graph: delegate, hand off, escalate, compose
+app/agent/tools.py        the tool registry: validation, timeouts, retries, approval, parallelism
+app/agent/react.py        a minimal ReAct loop over that registry
 app/agent/diagram.py      render the compiled graph
+
+app/services/pipeline.py  the eleven stages around the graph -- guards, cache, routing, cost
 app/services/copilot.py   Copilot facade and AnswerResult -- the API contract
+app/services/toolbox.py   the real tools, built where the services live
+app/services/guardrails.py input and output guards
+app/services/pii.py       find and redact personal data before it travels
+app/services/authorization.py  three roles over a deny-by-default permission table
+app/services/approval.py  the human-in-the-loop queue
+app/services/cache.py     the semantic answer cache
+app/services/routing.py   complexity -> tier -> model, and the cost model
+app/services/byok.py      caller-supplied provider keys, pooled and never stored
+app/services/ratelimit.py a token bucket in front of the deployment's own key
+app/services/streaming.py server-sent events, and what a cut stream looks like
+app/services/extractive.py answering from retrieved text with no model at all
+app/services/scratchpad.py shared working notes, per conversation
+app/services/memory_store.py long-term facts, closed key set, pseudonymised subject
+app/services/idempotency.py the ledger that stops a retry happening twice
+app/services/state_db.py  one SQLite file for working state, separate from the audit log
 app/services/audit.py     AuditStore -- the SQLite record of every answered question
-app/api/deps.py           what a route depends on, read off app.state
+app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
+
+app/api/deps.py           what a route depends on, read off app.state; both gates
 app/api/routes.py         the ops (/health) and api (/api/*) routers
 app/main.py               create_app -- builds the app, wires services, mounts /static
+api/index.py              the Vercel entry point: the same ASGI app, nothing else
 
-templates/index.html      the console: chat, workflow graph, trace, evidence, upload, audit
-static/css/style.css      design tokens, components, dark and light
-static/js/app.js          the console's behaviour -- no framework, no build step
-
-app/services/ingestion.py load -> chunk -> index, as one door over app/rag/
+templates/index.html      the console shell and all eight views
+static/css/style.css      design tokens, shell, components, both themes
+static/css/views.css      per-view styles
+static/js/app.js          bootstrap: theme, rail, view switching, health poll
+static/js/dom.js          element building and the markdown renderer -- no innerHTML
+static/js/api.js          fetch wrappers, key storage, the SSE reader
+static/js/graph.js        layered layout, drawn from /api/graph rather than a copy
+static/js/charts.js       donut, bars and percentiles, hand-built from SVG
+static/js/{chat,dashboard,agents,admin,settings}.js   one module per view
 
 scripts/                  CLI entry points: ingest, demo, diagnostics, diagram
 scripts/_cli.py           the preamble they share: console setup + a parser
-tests/                    230 tests over fakes -- no network, no credentials
+tests/                    652 tests over fakes -- no network, no credentials
 
 data/private_kb/          11 internal HR policies; a subdirectory is a department
                           the only corpus on disk, deliberately -- see below
 step.md                   the 16-step build plan this project is working through
-docs/                     the reference brief, target architecture, generated graph
+docs/                     six topic documents, the reference brief, the architecture
 req.txt                   pinned dependencies (requirements.txt forwards to it)
+api/requirements.txt      the slim set for Vercel -- no torch; see docs/deploy-vercel.md
 Dockerfile                runtime image: non-root, CPU-only torch, model baked in
 docker-compose.yml        the one service that exists today, plus its volume
+vercel.json               one function, every path rewritten to it
 .dockerignore             keeps hr/ (1.3 GB) and the audit log out of the context
+.vercelignore             the same two, for the same two reasons
 CLAUDE.md                 architecture notes and non-obvious constraints
 ```
 

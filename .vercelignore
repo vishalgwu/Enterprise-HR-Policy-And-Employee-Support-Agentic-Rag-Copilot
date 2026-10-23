@@ -1,0 +1,58 @@
+# What must not be uploaded to the build.
+#
+# Two of these are not housekeeping.
+#
+# `hr/` is this project's virtualenv, at 1.3 GB. The conventional `venv/`,
+# `.venv/` and `env/` lines miss it because it is named after the project, and
+# without this line every deploy uploads 1.3 GB before a single instruction
+# runs. The same line is in `.dockerignore` for the same reason.
+#
+# `data/*.db` is the audit log: every employee question and the answer they
+# were given, which `/api/audit` is admin-gated to protect. It must not be
+# uploaded into a build artefact. On Vercel the databases live in /tmp anyway,
+# so nothing here needs them.
+
+hr/
+venv/
+.venv/
+env/
+
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+
+.git/
+.github/
+.claude/
+
+# Secrets. Vercel takes configuration from its own environment variables; a
+# .env in the build would silently outrank them in some setups and is a secret
+# in an artefact either way.
+.env
+.env.*
+!.env.example
+
+# The audit log and any other local database.
+data/*.db
+data/*.db-wal
+data/*.db-shm
+uploads/
+
+# Development-only surfaces.
+tests/
+scripts/
+Dockerfile
+.dockerignore
+docker-compose.yml
+create_project.py
+ingest_sample_kb.py
+run.py
+
+# Documentation and reference material. The console carries its own copy of
+# everything a visitor needs to read, so a 2 MB PDF in the bundle buys nothing.
+docs/*.pdf
+docs/*.png
+*.md
+!README.md
