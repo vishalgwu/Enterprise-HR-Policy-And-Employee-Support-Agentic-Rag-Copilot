@@ -158,9 +158,15 @@ def test_the_console_is_served_at_the_root():
 
 def test_the_page_tells_the_ui_whether_admin_is_configured():
     """The UI hides controls the server would refuse. That is a courtesy, not
-    the gate -- `require_admin` is, on every request."""
-    assert 'data-admin="off"' in client().get("/").text
-    assert 'data-admin="on"' in client(ADMIN_API_KEY="k").get("/").text
+    the gate -- `require_admin` is, on every request.
+
+    `"true"`/`"false"` rather than the `"on"`/`"off"` this once used: the value
+    is read in JavaScript as `document.body.dataset.admin === "true"`, and a
+    vocabulary the comparison does not use is a vocabulary that silently
+    evaluates false.
+    """
+    assert 'data-admin="false"' in client().get("/").text
+    assert 'data-admin="true"' in client(ADMIN_API_KEY="k").get("/").text
 
 
 def test_the_page_is_not_in_the_json_api_schema():

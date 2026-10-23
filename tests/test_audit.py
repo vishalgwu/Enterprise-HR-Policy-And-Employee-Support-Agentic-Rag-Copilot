@@ -120,14 +120,47 @@ def test_stats_report_how_answers_were_resolved(tmp_path):
 
 
 def test_stats_on_an_empty_log_do_not_divide_by_zero(tmp_path):
+    """Every metric has to survive a log with nothing in it.
+
+    Asserted as "no value is truthy" rather than against a literal dict: the
+    metrics endpoint keeps gaining aggregates, and a literal would make adding
+    one a two-file change for no safety. The key set *is* pinned below, so a new
+    aggregate still has to be added here deliberately -- and the thing that
+    would actually break, a rate dividing by a zero total, is a ZeroDivisionError
+    this call would raise before any assertion ran.
+    """
     stats = store(tmp_path).stats()
-    assert stats == {
-        "total": 0,
-        "by_source": {},
-        "grounded": 0,
-        "grounded_rate": 0.0,
-        "rewritten": 0,
-        "average_latency_ms": None,
+
+    assert stats["total"] == 0
+    for name, value in stats.items():
+        assert not value, f"{name} should be empty, zero or None on an empty log"
+
+    assert set(stats) == {
+        "total",
+        "by_source",
+        "grounded",
+        "grounded_rate",
+        "rewritten",
+        "average_latency_ms",
+        "by_mode",
+        "by_model",
+        "latency_p50_ms",
+        "latency_p95_ms",
+        "latency_p99_ms",
+        "latency_samples",
+        "prompt_tokens",
+        "completion_tokens",
+        "cost_usd",
+        "cost_per_answer_usd",
+        "cached",
+        "cache_hit_rate",
+        "byok",
+        "escalated",
+        "escalation_rate",
+        "tool_calls",
+        "agent_steps",
+        "guardrail_flagged",
+        "pii_redacted_answers",
     }
 
 
@@ -174,3 +207,60 @@ def test_the_stored_lists_really_are_json(tmp_path):
     with sqlite3.connect(tmp_path / "audit.db") as connection:
         raw = connection.execute("SELECT trace FROM chat_audit").fetchone()[0]
     assert json.loads(raw) == ["Router: kb", "KB Grader: good"]
+
+
+# --- Which form of the question is kept --------------------------------------
+
+
+def _redacted_answer():
+    """An answer whose question was altered on the way out of the process."""
+    return AnswerResult(
+        question="Call me on 555-123-4567 about my leave",
+        redacted_question="Call me on [REDACTED_PHONE] about my leave",
+        answer="Twenty days.",
+        source_used="private_kb",
+        pii_redacted=["phone"],
+    )
+
+
+def test_the_audit_log_stores_the_redacted_question_by_default(tmp_path):
+    """The compliance record is long-lived and readable by an administrator.
+
+    The one thing worse than an investigator missing a detail is this file
+    being the place somebody's phone number ended up.
+    """
+    audit = store(tmp_path)
+    audit.record(_redacted_answer())
+    entry = audit.recent()[0]
+
+    assert "555-123-4567" not in entry["question"]
+    assert "[REDACTED_PHONE]" in entry["question"]
+    assert entry["pii_redacted"] == ["phone"]
+
+
+def test_the_verbatim_question_can_be_kept_deliberately(tmp_path):
+    """`AUDIT_STORES_REDACTED=0` is the opposite decision, for a deployment
+    whose investigators need exactly what was typed.
+
+    It had no effect at all until this was wired: the setting was reported on
+    `/api/config` and read nowhere, so a deployment that turned it off kept
+    storing the redacted form and had no way to notice.
+    """
+    audit = AuditStore(tmp_path / "audit.db", store_redacted=False)
+    audit.record(_redacted_answer())
+    entry = audit.recent()[0]
+
+    assert entry["question"] == "Call me on 555-123-4567 about my leave"
+
+
+def test_a_question_that_was_never_redacted_is_stored_either_way(tmp_path):
+    """`redacted_question` is only set when redaction changed something, so
+    both settings have to fall back to the original rather than to None."""
+    plain = AnswerResult(question="What are the core hours?", answer="10 to 4.")
+
+    for store_redacted in (True, False):
+        audit = AuditStore(
+            tmp_path / f"audit-{store_redacted}.db", store_redacted=store_redacted
+        )
+        audit.record(plain)
+        assert audit.recent()[0]["question"] == "What are the core hours?"
