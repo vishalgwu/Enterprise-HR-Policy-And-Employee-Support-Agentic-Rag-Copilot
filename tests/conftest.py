@@ -9,6 +9,7 @@ that injection exists.
 from __future__ import annotations
 
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -176,6 +177,18 @@ def clean_process_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+# Where a Settings built by `settings_for` puts its SQLite files unless the
+# caller says otherwise. One directory per test session, outside the repo.
+#
+# This is isolation, not tidiness: `state_db_path` defaults to
+# `data/state.db` under the project root, and a test that reaches the scratchpad,
+# the approval queue or the idempotency ledger would otherwise create and grow a
+# real database inside the checkout -- which then survives into the next run and
+# makes a test that asserts "nothing pending" pass or fail by history. `*.db` is
+# gitignored, so the file would not even show up in `git status` to be noticed.
+_SCRATCH = Path(tempfile.mkdtemp(prefix="hr-copilot-tests-"))
+
+
 def settings_for(**overrides: Any) -> Settings:
     """Settings that never reach a real service, isolated from real config.
 
@@ -199,6 +212,8 @@ def settings_for(**overrides: Any) -> Settings:
         PINECONE_INDEX="test-index",
         PRIVATE_NAMESPACE="test-hr-docs",
         PUBLIC_NAMESPACE="test-public",
+        STATE_DB_PATH=_SCRATCH / "state.db",
+        AUDIT_DB_PATH=_SCRATCH / "audit.db",
     )
     base.update(overrides)
     return Settings(**base)

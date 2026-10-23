@@ -27,7 +27,7 @@ import hmac
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -58,6 +58,7 @@ SECRET_ALIASES: dict[str, str] = {
     "pinecone_api_key": "PINECONE_API",
     "openai_api_key": "OPENAI_API_KEY",
     "admin_api_key": "ADMIN_API_KEY",
+    "hr_api_key": "HR_API_KEY",
     "langsmith_api_key": "LANGSMITH_API_KEY",
 }
 
@@ -171,6 +172,14 @@ class Settings(BaseSettings):
         default=SecretStr(""), validation_alias="ADMIN_API_KEY"
     )
 
+    # The second role, between employee and admin. HR staff need to upload
+    # policy and decide approvals; they do not need to read every employee's
+    # question out of the audit log. Empty by default for the same reason
+    # `admin_api_key` is: an unset key means that role cannot be assumed, not
+    # that everyone holds it. See `app/services/authorization.py` for what each
+    # role may actually do.
+    hr_api_key: SecretStr = Field(default=SecretStr(""), validation_alias="HR_API_KEY")
+
     # --- Providers -----------------------------------------------------------
     # Groq and OpenAI are both supported so a deployment can pick. They are
     # chosen independently: a host that cannot run torch still wants a cheap
@@ -251,6 +260,178 @@ class Settings(BaseSettings):
     # latency: if a rewrite does not fix retrieval, a second rarely does.
     max_retries: int = 1
 
+    # --- Retrieval strategy --------------------------------------------------
+    # "auto" resolves to the best mode this deployment can actually serve:
+    # hybrid when Pinecone is configured, lexical when it is not. That is what
+    # lets the same image run as a keyed production deployment and as a public
+    # demo with no vector database at all, instead of two code paths.
+    #
+    # dense    Pinecone only. The behaviour this project shipped with.
+    # lexical  BM25 over the knowledge base on disk. No keys, no network.
+    # hybrid   both, fused with reciprocal rank fusion, then re-ranked.
+    retrieval_mode: Literal["auto", "dense", "hybrid", "lexical"] = Field(
+        default="auto", validation_alias="RETRIEVAL_MODE"
+    )
+    # How much of the fused ranking the dense retriever is responsible for.
+    # 0.6 rather than 0.5 because the dense side carries the similarity gate and
+    # is the one measured against the labelled set; BM25 is there to catch the
+    # exact-term questions embeddings are weakest at ("form 16", "IJP").
+    hybrid_dense_weight: float = Field(
+        default=0.6, ge=0.0, le=1.0, validation_alias="HYBRID_DENSE_WEIGHT"
+    )
+    # The constant in RRF's 1/(k + rank). 60 is the value from the original
+    # Cormack paper and the one every implementation defaults to; it is large
+    # enough that the difference between rank 1 and rank 2 does not dominate a
+    # document that both retrievers agreed on.
+    rrf_k: int = Field(default=60, ge=1, validation_alias="RRF_K")
+    # How many candidates the re-ranker sees. Larger than `default_k` on
+    # purpose: re-ranking can only reorder what it is given, so a gate that
+    # already cut the list to 4 leaves it nothing to do.
+    rerank_candidates: int = Field(default=12, ge=1, validation_alias="RERANK_CANDIDATES")
+    # "lexical" is a no-cost term-overlap re-rank that runs offline; "llm" asks
+    # the model to score each candidate, which is better and costs a call per
+    # question; "none" keeps the fused order. Default is lexical because it is
+    # free, deterministic, and measurably better than nothing.
+    rerank_strategy: Literal["lexical", "llm", "none"] = Field(
+        default="lexical", validation_alias="RERANK_STRATEGY"
+    )
+    # Few-shot grading: the same grader instruction plus four labelled examples.
+    # Off by default because `GRADER_PROMPT` is what the 0.15 gate and the 21/21
+    # labelled set were measured against, and switching the prompt invalidates
+    # both numbers at once. This is the A/B switch, not an improvement already
+    # made -- see `GRADER_PROMPT_FEWSHOT` in `app/agent/prompts.py`.
+    fewshot_grading: bool = Field(default=False, validation_alias="FEWSHOT_GRADING")
+
+    # --- Semantic cache ------------------------------------------------------
+    cache_enabled: bool = Field(default=True, validation_alias="CACHE_ENABLED")
+    # Raw cosine between two questions' embeddings for one to answer the other.
+    # High, deliberately: "how much PTO do I get?" and "how much PTO do
+    # contractors get?" are lexically and semantically close, and serving the
+    # first answer to the second question is a wrong HR answer, which is far
+    # more expensive than a cache miss. Measured on the labelled set: paraphrase
+    # pairs sat at 0.94-0.99, the closest *different* question pair at 0.91.
+    cache_similarity: float = Field(
+        default=0.95, ge=0.0, le=1.0, validation_alias="CACHE_SIMILARITY"
+    )
+    # Short, because policy changes and an HR answer that is three hours stale
+    # is a wrong answer with a citation attached. Fifteen minutes covers the
+    # burst a single announcement causes without outliving a policy edit.
+    cache_ttl_seconds: int = Field(
+        default=900, ge=0, validation_alias="CACHE_TTL_SECONDS"
+    )
+    cache_max_entries: int = Field(
+        default=512, ge=1, validation_alias="CACHE_MAX_ENTRIES"
+    )
+
+    # --- Model routing -------------------------------------------------------
+    # Routing picks a cheap model for a question that does not need a better
+    # one. Off makes every question use `active_llm_model`, which is what to do
+    # while measuring whether routing hurt quality.
+    model_routing_enabled: bool = Field(
+        default=True, validation_alias="MODEL_ROUTING_ENABLED"
+    )
+    # The two ends of the ladder, as model ids for the active provider. The
+    # middle rung is `active_llm_model`. Empty means "no separate model for this
+    # tier", which collapses the ladder gracefully rather than failing on an id
+    # the configured key cannot reach.
+    fast_model: str = Field(default="", validation_alias="FAST_MODEL")
+    deep_model: str = Field(default="", validation_alias="DEEP_MODEL")
+
+    # --- Agent mode ----------------------------------------------------------
+    # Which orchestration answers a question.
+    #
+    # graph       the 11-node LangGraph pipeline. Deterministic, cheapest.
+    # react       a tool-choosing ReAct loop over the tool registry.
+    # supervisor  a supervisor delegating to specialist workers.
+    # auto        graph for a single-source question, supervisor when the
+    #             question spans departments. See `app/services/orchestrator.py`.
+    agent_mode: Literal["graph", "react", "supervisor", "auto"] = Field(
+        default="auto", validation_alias="AGENT_MODE"
+    )
+
+    # --- Budgets -------------------------------------------------------------
+    # A bounded rewrite loop needs one counter; an agent that chooses its own
+    # tools needs a ceiling on each thing it can spend. See
+    # `app/agent/budgets.py` for why there are six rather than one.
+    max_agent_steps: int = Field(default=8, ge=1, validation_alias="MAX_AGENT_STEPS")
+    max_tool_calls: int = Field(default=12, ge=1, validation_alias="MAX_TOOL_CALLS")
+    max_llm_calls: int = Field(default=16, ge=1, validation_alias="MAX_LLM_CALLS")
+    max_agent_tokens: int = Field(
+        default=120_000, ge=1000, validation_alias="MAX_AGENT_TOKENS"
+    )
+    max_agent_seconds: float = Field(
+        default=45.0, gt=0, validation_alias="MAX_AGENT_SECONDS"
+    )
+    max_agent_cost_usd: float = Field(
+        default=0.25, gt=0, validation_alias="MAX_AGENT_COST_USD"
+    )
+    # How many times the supervisor may hand off before it must compose an
+    # answer from what the workers found. Four is two round trips through two
+    # specialists, which covers every multi-department question in the labelled
+    # set.
+    max_handoffs: int = Field(default=4, ge=1, validation_alias="MAX_HANDOFFS")
+
+    # --- Tools ---------------------------------------------------------------
+    # Per-call ceiling, enforced by the registry rather than by each handler, so
+    # a tool that forgets its own timeout still cannot hang the request.
+    tool_timeout_seconds: float = Field(
+        default=20.0, gt=0, validation_alias="TOOL_TIMEOUT_SECONDS"
+    )
+    # Retries are for a transient failure, so they apply only to a tool declared
+    # idempotent. Two means three attempts.
+    tool_retries: int = Field(default=2, ge=0, le=5, validation_alias="TOOL_RETRIES")
+    tool_backoff_seconds: float = Field(
+        default=0.4, ge=0, validation_alias="TOOL_BACKOFF_SECONDS"
+    )
+    # How many tools may run at once when the agent asks for several. Small:
+    # each one is a network call against a rate-limited free tier, and the
+    # latency win past four is noise.
+    tool_parallelism: int = Field(
+        default=4, ge=1, le=16, validation_alias="TOOL_PARALLELISM"
+    )
+
+    # --- Guardrails ----------------------------------------------------------
+    input_guard_enabled: bool = Field(default=True, validation_alias="INPUT_GUARD")
+    output_guard_enabled: bool = Field(default=True, validation_alias="OUTPUT_GUARD")
+    # Redaction of personal data found in a question before it is embedded,
+    # sent to a provider, or written to the audit log. On by default: this
+    # product invites employees to describe their own situation, so a question
+    # carrying a salary figure, a national id or a medical detail is the normal
+    # case rather than the exception.
+    redact_pii: bool = Field(default=True, validation_alias="REDACT_PII")
+    # Whether the audit log keeps the redacted question or the original. Default
+    # is redacted, which costs an investigator some context and saves the
+    # compliance record from being the place the PII ended up.
+    audit_stores_redacted: bool = Field(
+        default=True, validation_alias="AUDIT_STORES_REDACTED"
+    )
+
+    # --- Bring your own key --------------------------------------------------
+    # A visitor may supply their own provider key, which is then used for their
+    # requests only and never stored. Switchable off for an internal deployment
+    # that wants every answer on the company's own account.
+    allow_byok: bool = Field(default=True, validation_alias="ALLOW_BYOK")
+    # How many distinct caller-supplied provider configurations are kept warm.
+    # Each entry holds a compiled graph, not a key: see
+    # `app/services/byok.py`.
+    byok_pool_size: int = Field(default=8, ge=1, le=64, validation_alias="BYOK_POOL_SIZE")
+
+    # --- Rate limiting -------------------------------------------------------
+    # Only meaningful for the deployment's *own* key: a caller spending their
+    # own key is not spending ours. `/api/chat` is unauthenticated by design, so
+    # a public URL with no limit in front of it is a bill waiting to happen.
+    rate_limit_enabled: bool = Field(default=True, validation_alias="RATE_LIMIT_ENABLED")
+    rate_limit_per_minute: int = Field(
+        default=10, ge=1, validation_alias="RATE_LIMIT_PER_MINUTE"
+    )
+    rate_limit_burst: int = Field(default=5, ge=1, validation_alias="RATE_LIMIT_BURST")
+
+    # --- Public demo ---------------------------------------------------------
+    # Turns on the things a deployment anyone can reach needs and an internal
+    # one does not: the key panel is offered, the shared-key quota is advertised
+    # rather than hidden, and the console says plainly which model answered.
+    public_demo: bool = Field(default=False, validation_alias="PUBLIC_DEMO")
+
     # --- HTTP ----------------------------------------------------------------
     # WebBaseLoader requires a User-Agent, and the Groq API sits behind
     # Cloudflare, which blocks the default Python-urllib agent with a 403 that
@@ -279,6 +460,13 @@ class Settings(BaseSettings):
     )
     audit_db_path: Path = Field(
         default=PROJECT_ROOT / "data" / "audit.db", validation_alias="AUDIT_DB_PATH"
+    )
+    # Working state -- scratchpad, approvals, remembered facts, the idempotency
+    # ledger -- in its own file, separate from the audit log. See
+    # `app/services/state_db.py` for why the compliance record and the churn do
+    # not share a file.
+    state_db_path: Path = Field(
+        default=PROJECT_ROOT / "data" / "state.db", validation_alias="STATE_DB_PATH"
     )
 
     # The UI. Settings rather than fixed paths for the same reason as the rest:
@@ -326,6 +514,18 @@ class Settings(BaseSettings):
     langsmith_hide_outputs: bool = Field(
         default=True, validation_alias="LANGSMITH_HIDE_OUTPUTS"
     )
+
+    # In-process span tracing: the local half of the observability split. On by
+    # default and costing nothing, because it needs no key and no third party --
+    # unlike LangSmith, which is off unless deliberately switched on. See
+    # `app/core/tracing.py`.
+    trace_spans: bool = Field(default=True, validation_alias="TRACE_SPANS")
+    # Whether a span may carry the question, a retrieved chunk or an answer.
+    # Redacted by default for the same reason LangSmith payloads are: spans are
+    # serialised onto an HTTP response and written to the audit row, so an
+    # attribute holding policy text is that text in a second place nobody
+    # accounted for. Turn it off for a local debugging run, not in production.
+    trace_payloads: bool = Field(default=False, validation_alias="TRACE_PAYLOADS")
 
     @property
     def tracing_enabled(self) -> bool:
@@ -417,6 +617,112 @@ class Settings(BaseSettings):
         if not expected or not presented:
             return False
         return hmac.compare_digest(expected, presented.strip())
+
+    @property
+    def hr_enabled(self) -> bool:
+        """False when no HR key is configured; that role cannot be assumed."""
+        return bool(self._secret("hr_api_key"))
+
+    def check_hr_key(self, presented: str | None) -> bool:
+        """Constant-time comparison of a presented HR key.
+
+        Same shape as `check_admin_key`, and the same reasons: False when the
+        role is not configured at all, so an unset key cannot be matched by an
+        empty header, and `compare_digest` so a plain `==` does not leak the
+        key's length and prefix through timing.
+        """
+        expected = self._secret("hr_api_key")
+        if not expected or not presented:
+            return False
+        return hmac.compare_digest(expected, presented.strip())
+
+    # --- Capabilities --------------------------------------------------------
+    # What this deployment can actually do, as opposed to what it is configured
+    # to prefer. Separate from `missing_secrets()` on purpose: that reports a
+    # configuration *fault*, while these report a deployment that is running
+    # correctly in a reduced shape -- a public demo with no vector database is
+    # not broken, it is lexical.
+
+    @property
+    def has_vector_store(self) -> bool:
+        return bool(self._secret("pinecone_api_key"))
+
+    @property
+    def has_web_search(self) -> bool:
+        return bool(self._secret("tavily_api_key"))
+
+    @property
+    def has_llm(self) -> bool:
+        """Whether a *server-side* chat model is reachable.
+
+        False does not mean no answers: a caller supplying their own key still
+        gets a model, and a deployment with neither still answers from
+        retrieval alone through the extractive path. It means this deployment
+        will not spend its own money by default.
+        """
+        if self.llm_provider == "openai":
+            return bool(self._secret("openai_api_key"))
+        return bool(self._secret("groq_api_key"))
+
+    @property
+    def has_server_embeddings(self) -> bool:
+        """Whether embeddings can be produced without a caller's key.
+
+        The local provider needs no key at all -- it is a model on disk -- which
+        is exactly why it is the default and exactly why it cannot be deployed
+        to a serverless function.
+        """
+        if self.embedding_provider == "openai":
+            return bool(self._secret("openai_api_key"))
+        return True
+
+    @property
+    def effective_retrieval_mode(self) -> Literal["dense", "hybrid", "lexical"]:
+        """What `retrieval_mode` resolves to on this deployment.
+
+        `auto` is the only value that depends on the environment, and it
+        resolves *downwards*: a mode this deployment cannot serve degrades to
+        one it can rather than failing at the first question. An explicit
+        `dense` on a deployment with no Pinecone key is also degraded, because
+        the alternative is every question returning nothing while `/health`
+        reports the mode the operator asked for.
+        """
+        dense_possible = self.has_vector_store and self.has_server_embeddings
+        if self.retrieval_mode == "lexical":
+            return "lexical"
+        if not dense_possible:
+            return "lexical"
+        if self.retrieval_mode == "dense":
+            return "dense"
+        return "hybrid"
+
+    def capabilities(self) -> dict[str, Any]:
+        """A JSON-safe summary of the reduced shape, for `/health` and the UI.
+
+        The console shows this rather than inferring it: "why did it answer from
+        the web?" and "why is there no citation?" both have configuration
+        answers, and a demo that cannot say which features are live reads as a
+        broken one.
+        """
+        return {
+            "vector_store": self.has_vector_store,
+            "web_search": self.has_web_search,
+            "server_llm": self.has_llm,
+            "server_embeddings": self.has_server_embeddings,
+            "retrieval_mode": self.effective_retrieval_mode,
+            "byok": self.allow_byok,
+            "semantic_cache": self.cache_enabled,
+            "model_routing": self.model_routing_enabled,
+            "input_guard": self.input_guard_enabled,
+            "output_guard": self.output_guard_enabled,
+            "pii_redaction": self.redact_pii,
+            "approvals": True,
+            "span_tracing": self.trace_spans,
+            "agent_mode": self.agent_mode,
+            "admin": self.admin_enabled,
+            "hr": self.hr_enabled,
+            "public_demo": self.public_demo,
+        }
 
     # --- Secret access -------------------------------------------------------
     def require(self, field: str) -> str:

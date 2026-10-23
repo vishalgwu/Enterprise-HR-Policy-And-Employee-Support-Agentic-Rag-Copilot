@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 from conftest import settings_for
 from pydantic import ValidationError
 
-from app.core.config import Settings, get_settings, known_embedding_dim
+from app.core.config import (
+    PROJECT_ROOT,
+    SECRET_ALIASES,
+    Settings,
+    get_settings,
+    known_embedding_dim,
+)
 
 
 def test_short_env_names_map_to_fields():
@@ -454,3 +461,50 @@ def test_the_shared_settings_helper_is_isolated_from_a_real_env_file():
     assert settings_for(ADMIN_API_KEY="k").admin_enabled is True
     # A field nothing overrides must still be the code's default, not a file's.
     assert settings_for().langsmith_project == "hr-copilot"
+
+
+# --- .env.example ------------------------------------------------------------
+
+
+ENV_VAR = re.compile(r"^#?\s*([A-Z][A-Z0-9_]{2,})=", re.MULTILINE)
+
+
+def _documented_variables() -> set[str]:
+    text = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+    return set(ENV_VAR.findall(text))
+
+
+def _settings_variables() -> set[str]:
+    names = set()
+    for name, field in Settings.model_fields.items():
+        alias = field.validation_alias
+        names.add(str(alias) if alias else name.upper())
+    return names
+
+
+def test_env_example_never_documents_a_setting_that_does_not_exist():
+    """The direction of drift that actually misleads somebody.
+
+    `.env.example` is the file a deployer copies, and a variable named there
+    that `Settings` does not read is silently ignored -- so the deployment runs
+    with the default while its configuration says otherwise, which is the
+    hardest kind of misconfiguration to notice. The reverse direction (a
+    setting with no entry here) is only an undocumented knob, so it is not
+    asserted: several structural values, like CHUNK_SIZE, are deliberately not
+    presented as things to tune per environment.
+    """
+    unknown = sorted(_documented_variables() - _settings_variables())
+    assert not unknown, f".env.example names settings that do not exist: {unknown}"
+
+
+def test_every_secret_alias_is_documented():
+    """A key nobody is told to set is a deployment that reports itself broken.
+
+    Narrower than the test above and asserted in the other direction, because
+    the credentials are the one group where an undocumented entry has a real
+    cost: `/health` names the missing variable, and the deployer then has to
+    find out from the source what to put in it.
+    """
+    documented = _documented_variables()
+    missing = sorted(set(SECRET_ALIASES.values()) - documented)
+    assert not missing, f"undocumented credentials: {missing}"
