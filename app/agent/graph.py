@@ -74,12 +74,23 @@ def build_graph(
     embedding: Any = None,
     verbose: bool = True,
     settings: Settings | None = None,
+    tracer: Any = None,
+    budget: Any = None,
 ):
     """Wire and compile the agent graph.
 
     Every client is injectable, so a test builds the real graph over fakes.
+
+    **A compiled graph is reusable across questions but a tracer is not.** A
+    tracer belongs to one run, so passing one here binds every question this
+    graph answers to the same span list. `app/services/pipeline.py` therefore
+    compiles a graph once per model and keeps the per-run tracer out of it,
+    using the node trace for the step list; pass `tracer` here only for a
+    single-run graph, which is what a CLI and a test build.
     """
-    nodes = build_nodes(llm, retriever, web_search, embedding, verbose, settings)
+    nodes = build_nodes(
+        llm, retriever, web_search, embedding, verbose, settings, tracer, budget
+    )
 
     builder = StateGraph(AgentState)
     for name in NODE_NAMES:

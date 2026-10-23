@@ -21,9 +21,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent.prompts import GRADER_PROMPT, ROUTER_PROMPT
+from app.agent.prompts import GRADER_PROMPT, GRADER_PROMPT_FEWSHOT, ROUTER_PROMPT
 from app.agent.schemas import EvidenceGrade, Grade, Route, RouteDecision
-from app.core.config import get_logger
+from app.core.config import Settings, get_logger, get_settings
 from app.rag.clients import get_llm, is_rate_limit
 
 log = get_logger("decisions")
@@ -37,9 +37,25 @@ def get_router(llm: Any = None):
     return ROUTER_PROMPT | (llm or get_llm()).with_structured_output(RouteDecision)
 
 
-def get_evidence_grader(llm: Any = None):
-    """Runnable mapping {"question": str, "evidence": str} to an EvidenceGrade."""
-    return GRADER_PROMPT | (llm or get_llm()).with_structured_output(EvidenceGrade)
+def get_evidence_grader(llm: Any = None, settings: Settings | None = None):
+    """Runnable mapping {"question": str, "evidence": str} to an EvidenceGrade.
+
+    `FEWSHOT_GRADING` swaps in `GRADER_PROMPT_FEWSHOT`, which is the same
+    instruction plus four labelled examples. **Off by default, and that is the
+    methodology rather than an opinion about few-shot prompting**:
+    `GRADER_PROMPT` is what the 0.15 similarity gate and the 21/21 labelled
+    decision set were both measured against, so switching it invalidates two
+    numbers at once with no way to tell which change moved which. Run
+    `scripts/eval_decisions.py` both ways before turning it on.
+
+    `settings` is read here rather than passed down from the node because the
+    choice is a deployment-wide one, and threading it through `build_nodes`,
+    `build_graph` and `AnswerPipeline` to reach one `if` would put a parameter
+    in four signatures for a value none of them has an opinion about.
+    """
+    settings = settings or get_settings()
+    prompt = GRADER_PROMPT_FEWSHOT if settings.fewshot_grading else GRADER_PROMPT
+    return prompt | (llm or get_llm()).with_structured_output(EvidenceGrade)
 
 
 def failed_generation(exc: BaseException) -> str | None:
@@ -72,7 +88,23 @@ def coerce(text: str | None, allowed: tuple[str, ...]) -> str | None:
     return hits[0] if len(hits) == 1 else None
 
 
-def _recover(exc: BaseException, allowed: tuple[str, ...], tag: str, default: str) -> str:
+def _recover(
+    exc: BaseException,
+    allowed: tuple[str, ...],
+    tag: str,
+    default: str,
+    steps: list[str] | None = None,
+) -> str:
+    """Rescue a decision from a structured-output failure, or fall back safely.
+
+    `steps` is the node's trace list, appended to for the same reason `guard()`
+    in `app/agent/nodes.py` appends to it: a degraded call and a genuine
+    judgement produce the same value, and only the trace distinguishes them.
+    Without it a quota-exhausted router -- which defaults to `kb`, and a
+    quota-exhausted grader, which defaults to `weak` -- looked in the trace
+    exactly like a working one that had decided that, and the only record was a
+    line in the server log nobody reading the answer can see.
+    """
     recovered = coerce(failed_generation(exc), allowed)
     if recovered:
         log.debug("[%s] recovered %r from a failed structured call", tag, recovered)
@@ -89,6 +121,10 @@ def _recover(exc: BaseException, allowed: tuple[str, ...], tag: str, default: st
             default,
             str(exc)[:160],
         )
+        detail = (
+            f"rate limited by the provider; defaulted to {default!r}, "
+            f"which is a quota failure and not a judgement"
+        )
     else:
         log.warning(
             "[%s] structured output failed (%s); defaulting to %r",
@@ -96,10 +132,18 @@ def _recover(exc: BaseException, allowed: tuple[str, ...], tag: str, default: st
             type(exc).__name__,
             default,
         )
+        detail = (
+            f"structured output failed ({type(exc).__name__}); "
+            f"defaulted to {default!r}"
+        )
+    if steps is not None:
+        steps.append(f"{tag}: {detail}")
     return default
 
 
-def route_question(question: str, router: Any = None) -> Route:
+def route_question(
+    question: str, router: Any = None, steps: list[str] | None = None
+) -> Route:
     """Route one message, surviving a structured-output failure.
 
     Falls back to 'kb' rather than 'direct': routing an unclassifiable message
@@ -109,10 +153,17 @@ def route_question(question: str, router: Any = None) -> Route:
     try:
         return (router or get_router()).invoke({"question": question}).route
     except Exception as exc:  # noqa: BLE001 - no client error may crash the graph
-        return _recover(exc, ROUTE_VALUES, "Router", "kb")  # type: ignore[return-value]
+        return _recover(  # type: ignore[return-value]
+            exc, ROUTE_VALUES, "Router", "kb", steps
+        )
 
 
-def grade_evidence(question: str, evidence: str, grader: Any = None) -> Grade:
+def grade_evidence(
+    question: str,
+    evidence: str,
+    grader: Any = None,
+    steps: list[str] | None = None,
+) -> Grade:
     """Grade evidence. Empty evidence is 'weak' without spending a call.
 
     Falls back to 'weak' on a structured-output failure, so an unreadable grade
@@ -128,4 +179,6 @@ def grade_evidence(question: str, evidence: str, grader: Any = None) -> Grade:
             .grade
         )
     except Exception as exc:  # noqa: BLE001
-        return _recover(exc, GRADE_VALUES, "Grader", "weak")  # type: ignore[return-value]
+        return _recover(  # type: ignore[return-value]
+            exc, GRADE_VALUES, "Grader", "weak", steps
+        )

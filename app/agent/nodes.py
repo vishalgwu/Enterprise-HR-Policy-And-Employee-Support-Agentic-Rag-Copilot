@@ -40,8 +40,8 @@ from app.agent.prompts import (
 )
 from app.agent.schemas import AgentState
 from app.core.config import Settings, get_logger, get_settings
+from app.core.tracing import Tracer, null_tracer
 from app.rag.clients import (
-    get_embeddings,
     get_llm,
     get_web_search,
     is_rate_limit,
@@ -49,8 +49,8 @@ from app.rag.clients import (
     web_result_urls,
     web_results_to_text,
 )
+from app.rag.hybrid import build_retriever
 from app.rag.loaders import cite_sources, format_documents
-from app.rag.retrieval import get_kb_retriever
 
 _log = get_logger("graph")
 
@@ -86,32 +86,50 @@ def build_nodes(
     embedding: Any = None,
     verbose: bool = True,
     settings: Settings | None = None,
+    tracer: Tracer | None = None,
+    budget: Any = None,
 ) -> dict[str, Callable]:
     """Construct every node once, closed over shared clients.
 
     Each dependency is injectable and each is built only if not supplied, so a
     test can pass fakes without any network access at all.
+
+    `tracer` and `budget` are the two newer ones and both default to something
+    inert -- a tracer that records nothing, and no budget at all -- so a caller
+    that does not care is not made to construct them. The graph path is bounded
+    by `max_retries` rather than by the budget, so the budget here is *charged*
+    and not *checked*: what it buys is one run's token and cost figures being
+    comparable with the agentic paths', which is the only way to answer whether
+    the agent was worth it.
     """
     settings = settings or get_settings()
+    tracer = tracer or null_tracer()
     llm = llm or get_llm(settings=settings)
     if retriever is None:
-        embedding = embedding or get_embeddings()
-        retriever = get_kb_retriever(embedding=embedding, settings=settings)
+        # `build_retriever` resolves dense / hybrid / lexical from the settings
+        # and degrades rather than raising, which is why the embedding model is
+        # no longer loaded eagerly here: a lexical deployment must not pay ~90 MB
+        # to construct a client it will never call.
+        retriever = build_retriever(
+            settings=settings, embedding=embedding, llm=llm, tracer=tracer, budget=budget
+        )
     if web_search is None:
         web_search = get_web_search(settings=settings)
 
     router = get_router(llm)
-    grader = get_evidence_grader(llm)
+    grader = get_evidence_grader(llm, settings=settings)
     max_retries = settings.max_retries
 
     def note(tag: str, message: Any) -> list[str]:
         """Log one step and return it for the node to put in `trace`.
 
         `verbose` silences the console line only. The trace is state the API
-        returns and the UI renders, so it is recorded either way.
+        returns and the UI renders, so it is recorded either way -- and so is
+        the span, which is what the latency breakdown is built from.
         """
         if verbose:
             _log.info("[%s] %s", tag, message)
+        tracer.event(tag, kind="step", detail=str(message)[:120])
         return [f"{tag}: {message}"]
 
     def guard(
@@ -119,35 +137,58 @@ def build_nodes(
         action: Callable[[], Any],
         fallback: Any,
         steps: list[str] | None = None,
+        kind: str = "llm",
     ) -> Any:
         """Run a network call; on failure log it and degrade to `fallback`.
 
         Pass `steps` to have the degradation recorded in the trace as well: a
         caller reading the answer cannot otherwise tell an outage from a real
         absence of evidence.
+
+        `kind` labels the span. It defaults to `llm` because most guarded calls
+        here are model round trips, and the span kinds are what the latency
+        breakdown groups by -- a retrieval mislabelled as a model call makes the
+        one chart that answers "where did the time go" answer it wrongly. The
+        exception is caught *inside* the span, so no provider error text can
+        reach `Span.error` and from there the HTTP response or the audit row.
         """
-        try:
-            return action()
-        except Exception as exc:  # noqa: BLE001 - a node must never abort the graph
-            if is_rate_limit(exc):
-                _log.error(
-                    "[%s] RATE LIMITED by the provider - results below are "
-                    "degraded, not a knowledge gap (%s)",
-                    tag,
-                    str(exc)[:160],
-                )
-                detail = "rate limited by the provider; results are degraded"
-            else:
-                _log.warning(
-                    "[%s] failed (%s: %s); continuing with fallback",
-                    tag,
-                    type(exc).__name__,
-                    str(exc)[:200],
-                )
-                detail = f"failed ({type(exc).__name__}); continuing with fallback"
-            if steps is not None:
-                steps.append(f"{tag}: {detail}")
-            return fallback
+        with tracer.span(tag, kind=kind) as span:
+            try:
+                return action()
+            except Exception as exc:  # noqa: BLE001 - must never abort the graph
+                span.status = "degraded"
+                span.set(failure=type(exc).__name__)
+                return _degrade(tag, exc, fallback, steps)
+
+    def _degrade(
+        tag: str, exc: BaseException, fallback: Any, steps: list[str] | None
+    ) -> Any:
+        """Log a swallowed failure, record it in the trace, return the fallback.
+
+        Split out of `guard` only so the `with tracer.span(...)` block stays
+        short enough to read. The rate-limit case logs at ERROR deliberately:
+        every safe default in this graph is "weak", so an exhausted quota looks
+        exactly like a knowledge gap unless it is named.
+        """
+        if is_rate_limit(exc):
+            _log.error(
+                "[%s] RATE LIMITED by the provider - results below are "
+                "degraded, not a knowledge gap (%s)",
+                tag,
+                str(exc)[:160],
+            )
+            detail = "rate limited by the provider; results are degraded"
+        else:
+            _log.warning(
+                "[%s] failed (%s: %s); continuing with fallback",
+                tag,
+                type(exc).__name__,
+                str(exc)[:200],
+            )
+            detail = f"failed ({type(exc).__name__}); continuing with fallback"
+        if steps is not None:
+            steps.append(f"{tag}: {detail}")
+        return fallback
 
     def asked(state: AgentState) -> str:
         """The question every node downstream of `contextualize` should use.
@@ -204,16 +245,35 @@ def build_nodes(
             "trace": steps,
         }
 
+    def timed(tag: str, action: Callable[[], Any]) -> Any:
+        """Time a decision call that handles its own failure.
+
+        `classify_route` and `grade_evidence` already recover from a
+        structured-output failure and fall back to a safe default, so they must
+        *not* go through `guard()` -- that would wrap a call that cannot raise
+        and record a degradation that cannot happen. But they are model round
+        trips, and without a span around them the latency breakdown attributes
+        none of their time to `llm`: `note()` records a zero-duration event, so
+        `span_summary.by_kind["llm"]` was a lower bound that silently excluded
+        the router, which is on the path of every single question.
+        """
+        with tracer.span(tag, kind="llm"):
+            return action()
+
     # --- 1. Route ------------------------------------------------------------
     def route_question(state: AgentState) -> dict[str, Any]:
         question = asked(state)
         # classify_route survives a Groq tool_use_failed 400, which the router
         # hits often enough to matter: it is on the path of every question.
-        route = classify_route(question, router)
+        # `steps` is how a recovery or a quota failure reaches the trace: the
+        # safe default is `kb`, which is indistinguishable from a working
+        # router choosing `kb` unless the degradation says so.
+        steps: list[str] = []
+        route = timed("Router", lambda: classify_route(question, router, steps))
         return {
             "route": route,
             "current_query": question,
-            "trace": note("Router", route),
+            "trace": steps + note("Router", route),
         }
 
     def route_after_router(state: AgentState) -> Literal["retrieve_kb", "direct_answer"]:
@@ -225,7 +285,13 @@ def build_nodes(
         # A Pinecone outage degrades to "no evidence", which routes to the web
         # fallback -- the same path a genuinely empty retrieval takes.
         steps: list[str] = []
-        docs = guard("KB Retriever", lambda: retriever.invoke(query), [], steps)
+        docs = guard(
+            "KB Retriever",
+            lambda: retriever.invoke(query),
+            [],
+            steps,
+            kind="retrieval",
+        )
         steps += note("KB Retriever", f"{len(docs)} chunk(s) for {query!r}")
         # Citations are written beside the chunks they describe, so a rewrite
         # that replaces `kb_docs` replaces them in the same update.
@@ -243,8 +309,14 @@ def build_nodes(
                 "trace": note("KB Grader", "weak (nothing passed the similarity gate)"),
             }
 
-        grade = grade_evidence(asked(state), format_documents(docs), grader)
-        return {"kb_grade": grade, "trace": note("KB Grader", grade)}
+        steps: list[str] = []
+        grade = timed(
+            "KB Grader",
+            lambda: grade_evidence(
+                asked(state), format_documents(docs), grader, steps
+            ),
+        )
+        return {"kb_grade": grade, "trace": steps + note("KB Grader", grade)}
 
     def decide_after_kb_grade(
         state: AgentState,
@@ -258,7 +330,13 @@ def build_nodes(
         # This node is itself the fallback, so it needs one of its own: a Tavily
         # outage must degrade to empty evidence and let the graph rewrite or
         # admit defeat, not abort the run.
-        raw = guard("Tavily", lambda: web_search.invoke({"query": query}), None, steps)
+        raw = guard(
+            "Tavily",
+            lambda: web_search.invoke({"query": query}),
+            None,
+            steps,
+            kind="tool",
+        )
         web_text = web_results_to_text(raw)
         steps += note("Tavily", f"{len(web_text)} characters")
         return {
@@ -276,8 +354,12 @@ def build_nodes(
                 "trace": note("Web Grader", "weak (search returned nothing)"),
             }
 
-        grade = grade_evidence(asked(state), web_results, grader)
-        return {"web_grade": grade, "trace": note("Web Grader", grade)}
+        steps: list[str] = []
+        grade = timed(
+            "Web Grader",
+            lambda: grade_evidence(asked(state), web_results, grader, steps),
+        )
+        return {"web_grade": grade, "trace": steps + note("Web Grader", grade)}
 
     def decide_after_web_grade(
         state: AgentState,
