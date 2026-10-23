@@ -14,6 +14,130 @@ experiment to a measured, reproducible system with the failure modes written dow
 
 ---
 
+## Try it
+
+**→ [hr-policy-copilot.vercel.app](https://hr-policy-copilot.vercel.app)**
+
+It runs there with **no provider credentials at all**, and that is the interesting part rather than
+a limitation. With no Pinecone key and no chat model, `effective_retrieval_mode` resolves to
+`lexical`: BM25 over the eleven policy documents on disk, then the most relevant sentences stitched
+together and labelled as what they are. No model wrote them, so nothing can have invented a policy
+number — which makes the worst-case answer the most trustworthy one in the system.
+
+`/health` on that deployment reports `degraded` and names the three missing keys, and the console
+says so in the top bar. That is the capability reporting working, not a broken deploy: a public
+demo with no vector database is not faulty, it is lexical.
+
+Ask it *"How many days of paid time off do full-time employees get?"* and it answers from
+`leave-and-time-off.md` in about 10 ms. Ask it *"What is the capital of France?"* and it tells you
+it has nothing, which is the behaviour the whole retrieval gate exists to produce.
+
+**For written answers, paste your own OpenAI or Groq key into Settings.** Your questions are then
+answered on your account at whatever model you pick, with no shared-key rate limit. The key builds
+one chat client, is pooled by a hash of itself, and never reaches the audit log, a span, a log
+line, the vector index or the web search — only the chat model. `ALLOW_BYOK=0` turns the whole
+feature off for an internal deployment.
+
+What is live there and what is not:
+
+| | On the demo | Why |
+|---|---|---|
+| Retrieval | BM25, lexical | no Pinecone key, and a serverless function cannot ship torch |
+| Answers | extractive, or your key | no chat model is configured server-side |
+| Audit log | ephemeral | `/tmp` is the only writable path and does not survive a redeploy |
+| Rate limit | 6/min, per instance | a token bucket in process memory; see [docs/production.md](docs/production.md) |
+| Admin surface | configured, key withheld | `/api/audit` answers 401, `/docs` is withheld in production |
+
+The container is where this belongs; [docs/deploy-vercel.md](docs/deploy-vercel.md) is candid about
+which of those are platform limits and which have fixes.
+
+---
+
+## What was built
+
+Starting from a working retrieval stack and an 11-node LangGraph agent, this adds the layers that
+separate a demo from something you could put in front of employees. Each links to the document that
+carries its reasoning and its measurements.
+
+**Retrieval** — [docs/rag.md](docs/rag.md)
+- BM25 implemented directly (not a dependency), fused with the dense retriever by **reciprocal rank
+  fusion** — by *rank*, because a cosine score and a BM25 score are not on the same scale.
+- **Re-ranking** over a wider candidate list, because retrieval ranks by similarity to the question
+  and that is not the same as answering it: a wrong-source chunk scored **0.521** against a
+  weakest-correct of **0.171**.
+- A **lexical mode that needs no keys at all**, which is both the serverless fallback and genuinely
+  better at exact-term questions — a form number, "IJP", "Form 16".
+- Few-shot grading behind a switch, deliberately **off**, because the shipped prompt is what the
+  0.15 gate and the 21/21 labelled set were measured against.
+
+**Multi-agent** — [docs/multi-agent.md](docs/multi-agent.md)
+- A **supervisor-worker team** as a compiled graph: six specialists mapped onto documents that
+  actually exist, with handoff records, escalation to a human, and a shared scratchpad.
+- The hard rules — never the same worker twice, private documents before the web, a forced stop at
+  the handoff ceiling — live in the **branch functions, not the prompt**. A prompt instruction is a
+  suggestion.
+- A **split decision** whose safe default is *don't*: a wrongly split question costs latency, a
+  wrongly merged one costs the employee half their answer and still reads as complete.
+
+**Agent patterns** — [docs/agent-patterns.md](docs/agent-patterns.md)
+- A **minimal ReAct loop** over a **tool registry** with eleven ordered steps per call: validation,
+  authorization, approval, idempotency, timeout, retry, backoff, charge.
+- **Parallel tool calls** returned in *call* order rather than completion order, because the
+  observations go into a prompt.
+- **Short-term and long-term memory**, the latter over a closed key set — free-text keys would make
+  it a profile store.
+
+**Production** — [docs/production.md](docs/production.md)
+- **Semantic caching** with a deliberately high threshold and short TTL; the PTO/contractor pair is
+  the worked example of why a loose one would be dangerous here.
+- **Model routing**: complexity → tier → model, measured against a labelled set (14/14, previously
+  10/13 — it had been wrong in *both* directions at once).
+- **Streaming** over SSE, and **cost projection** reported honestly as a projection, never an
+  invoice.
+- **In-process span tracing** rendered in the console, with payloads redacted by default.
+
+**Safety** — [docs/safety.md](docs/safety.md)
+- **Input and output guards** with PII redaction across 13 identifier types, applied once at the
+  edge before a question reaches a provider, the vector index or the audit log.
+- Prompt injection is **flagged and neutralised, not refused** — and the document says plainly what
+  regex PII detection does *not* catch.
+- **Three roles over one deny-by-default table**, so HR can work the approval queue without gaining
+  the ability to read every employee's question.
+- A **human-in-the-loop approval queue** with single-shot decisions and expiry as a distinct
+  outcome from rejection.
+
+**Reliability** — [docs/reliability.md](docs/reliability.md)
+- **Six budget ceilings** per run, where a budget is a *stopping condition* and not an error: the
+  answer comes back partial and says so.
+- A **degradation ladder** — Pinecone down falls to BM25, a failed generation falls to the retrieved
+  text rather than an apology, no model at all still answers.
+- An **idempotency ledger** with an atomic claim and a stall window, so one crash does not block
+  retries for a day.
+
+**Surfaces**
+- A rebuilt **console**: ask, dashboard, agents, pipeline, knowledge, approvals, audit, settings —
+  no framework, no build step, and nothing untrusted ever assigned to `innerHTML`.
+- **652 offline tests**, zero lint findings, and a suite that passes with `.env` moved aside.
+
+### Bugs this work surfaced
+
+Worth listing, because each was silent and each has a test now:
+
+- The **complexity classifier was inverted** — it marked *"How many days of PTO do I get?"* complex
+  while marking a contractor's mid-notice parental leave question standard, routing the commonest
+  question to the deep model and the supervisor.
+- `FEWSHOT_GRADING`, the **semantic cache**, and `AUDIT_STORES_REDACTED` were all **switches that
+  did nothing** — the cache defines `__len__`, so an empty cache was falsy and `if self.cache`
+  skipped both the lookup and the store.
+- The **extractive fallback for a failed generation was never wired**: generation fails without
+  raising, so the rescue never fired.
+- **Supervisor escalations reached nobody** — they went to the scratchpad, never the approval queue.
+- A **phone number at the end of a sentence was not redacted** (a trailing-dot lookahead), and the
+  router and graders recorded zero-duration events, so the latency breakdown under-reported model
+  time.
+
+---
+
 ## Documentation
 
 Six topic documents, each grounded in the code and carrying the measurements behind its claims.
@@ -929,6 +1053,8 @@ Two things to decide before going public:
 
 ## Vercel
 
+**Live at [hr-policy-copilot.vercel.app](https://hr-policy-copilot.vercel.app).**
+
 The container is where this belongs; Vercel is where it is demonstrable. One function serves the
 console, the API and the static assets, and the full guide — including what does not work and why —
 is in [docs/deploy-vercel.md](docs/deploy-vercel.md).
@@ -941,8 +1067,8 @@ Three things make it fit, and all three are properties of the codebase rather th
 
 **Nothing heavy imports at module scope.** `import app.main` reaches only `fastapi`, `pydantic`,
 `pydantic-settings`, `langchain-core`, `langchain-text-splitters`, `langgraph` and `jinja2`. Every
-provider SDK is imported inside the function that builds its client, so `api/requirements.txt` can
-omit `sentence-transformers` — which pulls torch, measured at 769 MB on the CPU index against a
+provider SDK is imported inside the function that builds its client, so the `pyproject.toml`
+dependency set can omit `sentence-transformers` — which pulls torch, measured at 769 MB on the CPU index against a
 250 MB function limit. A module-scope `import langchain_huggingface` anywhere under `app/` would
 remove this deployment target silently.
 
@@ -1044,7 +1170,9 @@ data/private_kb/          11 internal HR policies; a subdirectory is a departmen
 step.md                   the 16-step build plan this project is working through
 docs/                     six topic documents, the reference brief, the architecture
 req.txt                   pinned dependencies (requirements.txt forwards to it)
-api/requirements.txt      the slim set for Vercel -- no torch; see docs/deploy-vercel.md
+pyproject.toml            tool config, plus the slim dependency set Vercel installs
+api/requirements.txt      a signpost: the Vercel set is in pyproject.toml, which is
+                          what that builder actually reads
 Dockerfile                runtime image: non-root, CPU-only torch, model baked in
 docker-compose.yml        the one service that exists today, plus its volume
 vercel.json               one function, every path rewritten to it

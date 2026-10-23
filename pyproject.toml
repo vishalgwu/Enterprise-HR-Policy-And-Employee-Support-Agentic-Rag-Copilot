@@ -3,8 +3,57 @@ name = "hr-copilot"
 version = "0.2.0"
 description = "Enterprise HR Policy & Employee Support Agentic RAG Copilot"
 requires-python = ">=3.11"
-# Dependencies are pinned in req.txt; this file exists for tool configuration.
-# requirements.txt forwards to it so the conventional pip command works.
+
+# --- The serverless dependency set -------------------------------------------
+# **This list is read by Vercel and by nothing else.** The container and a local
+# checkout install `req.txt`, which is the fuller set and the source of truth
+# for both; `requirements.txt` is a one-line forward to it so the conventional
+# pip command works.
+#
+# It is here rather than in `api/requirements.txt` because that is where
+# Vercel's Python builder looks. It resolves `pyproject.toml` first and
+# installs `[project].dependencies` with uv — so with this table absent it
+# found a project declaring no dependencies, installed nothing, and every
+# request returned FUNCTION_INVOCATION_FAILED with a build log that said
+# "Build Completed" in two seconds. A `requirements.txt` beside the entry point
+# is not consulted at all once a pyproject exists.
+#
+# The set is deliberately smaller than `req.txt`: no `sentence-transformers`,
+# because it pulls torch -- measured at 769 MB from the CPU index against a
+# 250 MB function limit. That only works because nothing heavy is imported at
+# module scope in this codebase; every provider SDK is imported inside the
+# function that builds its client, so omitting one costs the capability it
+# serves rather than the deployment. A module-scope `import
+# langchain_huggingface` anywhere under `app/` would break every cold start
+# here, silently, and `docs/deploy-vercel.md` says so.
+#
+# Versions must match `req.txt` exactly. Two files pinning one dependency to
+# two versions is how a bug reproduces in one deployment and not the other.
+dependencies = [
+  # Everything `import app.main` reaches without calling anything.
+  "fastapi==0.116.1",
+  "pydantic==2.13.5",
+  "pydantic-settings==2.10.1",
+  "langchain-core==1.6.1",
+  "langchain-text-splitters==1.1.2",
+  "langgraph==1.1.10",
+  "jinja2==3.1.6",
+  "python-multipart==0.0.20",
+  "typing-extensions==4.16.0",
+  # Providers, all imported lazily. A missing one costs its capability:
+  #   no langchain-pinecone -> retrieval resolves to lexical
+  #   no langchain-groq     -> a caller's own key still works
+  #   no langchain-tavily   -> the web fallback is off
+  "openai==3.3.1",
+  "langchain-openai==1.6.0",
+  "langchain-pinecone==0.2.13",
+  "pinecone==7.3.0",
+  "langchain-groq==1.1.3",
+  "langchain-tavily==0.2.18",
+  # Uploads. Small, and the admin path is worth demonstrating.
+  "pypdf==6.16.2",
+  "python-docx==1.2.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

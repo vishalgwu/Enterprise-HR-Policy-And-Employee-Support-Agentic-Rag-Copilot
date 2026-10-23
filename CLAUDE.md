@@ -1130,19 +1130,35 @@ aggregate withheld without `metrics.read`.
 
 ## Vercel notes
 
-`api/index.py`, `api/requirements.txt`, `vercel.json` and `.vercelignore` are the deployment
-surface; `docs/deploy-vercel.md` is the guide. Three things matter here.
+`api/index.py`, `pyproject.toml`, `vercel.json` and `.vercelignore` are the deployment surface;
+`docs/deploy-vercel.md` is the guide and the live demo is at
+https://hr-policy-copilot.vercel.app. Four things matter here.
 
 **Nothing heavy may import at module scope.** `import app.main` currently reaches only `fastapi`,
 `pydantic`, `pydantic-settings`, `langchain-core`, `langchain-text-splitters`, `langgraph` and
 `jinja2`. Every provider SDK is imported inside the function that builds its client. A module-scope
 `import langchain_huggingface` anywhere under `app/` removes this deployment target silently,
-because `api/requirements.txt` omits `sentence-transformers` — which pulls torch, far over a 250 MB
-function limit.
+because the `pyproject.toml` dependency set omits `sentence-transformers` — which pulls torch, far
+over a 250 MB function limit.
 
-**`api/requirements.txt` beats the root `requirements.txt`** on this platform, which is the only
-reason the root file can keep pinning torch for the container. Both pin the same versions; two files
-pinning one dependency to two versions is how a bug reproduces in one deployment and not the other.
+**The serverless dependency set lives in `pyproject.toml`, not in a requirements file.** Vercel's
+Python builder resolves `pyproject.toml` first and installs `[project].dependencies` with uv; once a
+pyproject exists, a `requirements.txt` beside the entry point is not consulted at all. With no
+`dependencies` table it installed nothing, logged "Build Completed" in two seconds, and every
+request returned `FUNCTION_INVOCATION_FAILED`. `api/requirements.txt` is now a signpost saying so.
+The two lists must pin identical versions; two files pinning one dependency to two versions is how a
+bug reproduces in one deployment and not the other.
+
+**`.vercelignore` follows gitignore semantics, and `.dockerignore` does not.** An unanchored `*.md`
+matches at *every* depth here, so the pattern copied across from `.dockerignore` silently excluded
+all eleven files in `data/private_kb/` and the deployment answered every question with
+"insufficient evidence" in three milliseconds. Nothing in the build log mentions it. Anchor
+root-level patterns with a leading slash.
+
+**Do not add a catch-all `rewrite` to `vercel.json`.** Vercel now routes an internal rewrite using
+the *rewritten* destination path, so `/(.*)` -> `/api/index` makes FastAPI see `/api/index` for
+every request and answer 404 from its own router. The builder detects the ASGI app and routes to it
+without one.
 
 **`/tmp` is the only writable path**, so `AUDIT_DB_PATH`, `STATE_DB_PATH` and `UPLOAD_DIR` must be
 pointed there — and the audit log therefore does not survive a redeploy. For a product whose audit

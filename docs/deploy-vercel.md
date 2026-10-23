@@ -1,5 +1,9 @@
 # Deploying to Vercel
 
+**Live: [hr-policy-copilot.vercel.app](https://hr-policy-copilot.vercel.app)** — deployed in the
+keyless mode described below, so it costs nothing to run and cannot run up a bill.
+
+
 This project ships three deployment shapes. Vercel is the one that gets you a
 public URL a stranger can try, which is a different problem from the one the
 container solves.
@@ -41,9 +45,20 @@ Measured on `python:3.13-slim`, torch from the default PyPI index is 1.2 GB
 plus 3.2 GB of `nvidia/` wheels; the CPU index brings that to 769 MB. A
 serverless function's limit is 250 MB unzipped, so this is not a tuning problem.
 
-`api/requirements.txt` is the slim set, and Vercel's Python runtime prefers the
-`requirements.txt` next to the entry point over the one at the repository root.
-That is the only reason the root file can keep pinning torch for the container.
+The slim set lives in **`pyproject.toml`**, under `[project].dependencies`.
+That is where Vercel's Python builder looks: it resolves `pyproject.toml` first
+and installs with uv, and once a pyproject exists a `requirements.txt` beside
+the entry point is **not consulted at all**.
+
+This cost a deployment to learn. With no `dependencies` table the builder found
+a project declaring none, installed nothing, logged "Build Completed" in two
+seconds, and every request returned `FUNCTION_INVOCATION_FAILED` — with nothing
+in the build log naming the cause. `api/requirements.txt` survives as a
+signpost explaining this, because a missing `requirements.txt` next to the
+entry point is the first place anyone will look.
+
+The root `requirements.txt` still forwards to `req.txt` for the container. The
+two lists must pin identical versions.
 
 ---
 
@@ -175,7 +190,7 @@ EMBEDDING_PROVIDER=openai PINECONE_INDEX=hr-copilot-1536 \
 
 Ingest reconciles a whole namespace and prunes orphans. That is not a thing to
 do per request, which is why `langchain-community` and the web loader are
-deliberately absent from `api/requirements.txt`.
+deliberately absent from the `pyproject.toml` dependency set.
 
 ### The model
 
@@ -327,7 +342,10 @@ the right half to keep.
 | `ModuleNotFoundError: No module named 'app'` | the repo root is not on `sys.path` | `api/index.py` inserts it; check the file was deployed |
 | 500 at cold start, logs mention `ADMIN_API_KEY` | `APP_ENV=production` with no admin key | set one, or unset `APP_ENV` |
 | Every answer is `insufficient_evidence` | `data/private_kb/` was not bundled | check `includeFiles` in `vercel.json` |
-| Build exceeds the size limit | the root `requirements.txt` was used | `api/requirements.txt` must sit beside `api/index.py` |
+| `FUNCTION_INVOCATION_FAILED` on every route, build took ~2s | `pyproject.toml` declares no `[project].dependencies`, so nothing was installed | put the slim set there; a `requirements.txt` beside the entry point is ignored once a pyproject exists |
+| Every answer is `insufficient_evidence` in a few ms | `.vercelignore` excluded the knowledge base | an unanchored `*.md` matches at **every** depth under gitignore semantics; anchor it as `/*.md` |
+| Every route 404s with FastAPI's own JSON | a catch-all `rewrite` in `vercel.json` rewrote the *path* the app sees | remove it; the builder routes to the detected ASGI app |
+| Build exceeds the size limit | torch was pulled in | `sentence-transformers` must stay out of the dependency set |
 | `401 UNAUTHENTICATED` from Pinecone | a quoted value in an env var | Vercel's dashboard stores values raw; do not wrap them in quotes |
 | Streams cut off part way | `MAX_AGENT_SECONDS` at or above `maxDuration` | lower the budget |
 | Answers work, `/api/audit` is empty | the instance that answered was recycled | expected on `/tmp`; see above |

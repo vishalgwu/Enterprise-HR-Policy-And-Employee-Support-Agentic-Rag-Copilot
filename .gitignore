@@ -39,3 +39,13 @@ uploads/*
 *.db-wal
 *.db-shm
 *.sqlite3
+
+# Added by `vercel link`. `.vercel/` holds the project id and `.env.local` the
+# OIDC token it downloads -- both are per-machine and neither belongs in the
+# repository.
+.vercel
+.env*
+# But not the template. `.env.example` is tracked, so the pattern above does not
+# currently hide it -- gitignore does not affect an already-tracked file -- and
+# this is here so that stays true if it is ever removed and re-added.
+!.env.example

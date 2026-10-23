@@ -1,64 +1,19 @@
-# Dependencies for the Vercel function. NOT the same set as `req.txt`.
+# Not used. The serverless dependency set lives in `pyproject.toml`.
 #
-# Vercel's Python runtime installs the `requirements.txt` sitting next to the
-# entry point in preference to the one at the repository root, which is the
-# whole reason this file is here: the root set pins `sentence-transformers`,
-# and that pulls torch. Measured on `python:3.13-slim`, torch from the default
-# index is 1.2 GB plus 3.2 GB of `nvidia/` wheels -- so far over a serverless
-# function's 250 MB unzipped limit that it is not a tuning problem, it is a
-# different deployment.
+# This file is kept as a signpost rather than deleted, because "a
+# requirements.txt next to the entry point" is the first place anyone looks
+# when a Python deployment is missing a package -- and finding nothing there is
+# a worse outcome than finding this.
 #
-# Everything heavy in this project is imported *inside* the function that needs
-# it (`app/rag/clients.py` branches on the provider, `app/rag/loaders.py`
-# imports pypdf only to read a PDF), so omitting a package here degrades one
-# capability rather than breaking the import. That property is what makes this
-# file viable at all, and it is worth not breaking: a module-scope
-# `import langchain_huggingface` anywhere under `app/` would turn every cold
-# start on this platform into a crash.
+# Vercel's Python builder resolves `pyproject.toml` first and installs
+# `[project].dependencies` with uv. Once a pyproject exists, a requirements
+# file beside the entry point is not consulted at all. That is a change from
+# the older builder, and the failure it produces is quiet: the build log says
+# "Installing required dependencies from pyproject.toml", then "Build
+# Completed" in about two seconds, and every request returns
+# FUNCTION_INVOCATION_FAILED because fastapi was never installed.
 #
-# Pinned to the same versions as `req.txt`. Two files pinning one dependency to
-# two versions is how a bug reproduces in one deployment and not the other.
-
-# --- The import graph at module scope ----------------------------------------
-# These are the only packages `import app.main` reaches without calling
-# anything. Nothing below this group is needed for the process to start.
-fastapi==0.116.1
-pydantic==2.13.5
-pydantic-settings==2.10.1
-langchain-core==1.6.1
-langchain-text-splitters==1.1.2
-langgraph==1.1.10
-jinja2==3.1.6
-python-multipart==0.0.20
-typing-extensions==4.16.0
-
-# --- Providers ---------------------------------------------------------------
-# Imported lazily. A missing one costs the capability it serves, not the
-# deployment:
-#   no langchain-openai   -> EMBEDDING_PROVIDER=openai and LLM_PROVIDER=openai fail
-#   no langchain-pinecone -> effective_retrieval_mode resolves to lexical
-#   no langchain-groq     -> LLM_PROVIDER=groq fails; a caller's own key still works
-#   no langchain-tavily   -> the web fallback is off; the private KB is unaffected
-openai==3.3.1
-langchain-openai==1.6.0
-langchain-pinecone==0.2.13
-pinecone==7.3.0
-langchain-groq==1.1.3
-langchain-tavily==0.2.18
-
-# --- Uploads -----------------------------------------------------------------
-# Small, and the admin upload path is one of the things worth demonstrating.
-# Note that an upload on this platform lands in /tmp and is indexed into
-# Pinecone -- the vectors persist, the file does not.
-pypdf==6.16.2
-python-docx==1.2.0
-
-# --- Deliberately absent -----------------------------------------------------
-# sentence-transformers, torch  -- see the note at the top of this file.
-# langchain-community, beautifulsoup4, lxml -- WebBaseLoader, which only
-#   `scripts/ingest_public_web.py` uses. Ingest is not a thing a serverless
-#   function should be doing: it is slow, it is not idempotent per request, and
-#   it reconciles a whole namespace. Run it from a machine, against the same
-#   Pinecone index this reads from.
-# uvicorn -- the platform provides the server; this exports an ASGI app.
-# pytest, ruff -- development gates, not runtime.
+# So the list is in `pyproject.toml`, under `[project].dependencies`, with the
+# reasoning beside it. `req.txt` remains the source of truth for the container
+# and for a local checkout; the serverless set is the smaller one, and the two
+# must pin identical versions.

@@ -52,7 +52,25 @@ run.py
 
 # Documentation and reference material. The console carries its own copy of
 # everything a visitor needs to read, so a 2 MB PDF in the bundle buys nothing.
-docs/*.pdf
-docs/*.png
-*.md
-!README.md
+#
+# **The leading slashes are load-bearing, and the lack of them was a bug.**
+# `.vercelignore` follows gitignore semantics, where an unanchored `*.md`
+# matches at *every* depth -- so it silently excluded all eleven policy
+# documents in `data/private_kb/`, and the deployment answered every question
+# with "insufficient evidence" in three milliseconds. Nothing in the build log
+# mentions it; the knowledge base is simply not there.
+#
+# The identical pattern is safe in `.dockerignore` because Docker's `*` does
+# not cross a path separator, so a root-level `*.md` there means only
+# root-level. Two files, two meanings, one pattern. Anchor it here.
+/*.md
+!/README.md
+/docs/*.md
+/docs/*.pdf
+/docs/*.png
+
+# The corpus is what this answers from. Stated positively as well as left
+# un-ignored above, because it is the one directory whose absence turns a
+# working deployment into a silent one.
+!data/private_kb/
+!data/private_kb/**
