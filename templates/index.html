@@ -1,646 +1,971 @@
+{#
+  The console. One Jinja2 page, rendered server-side so it starts with the
+  deployment's own identity -- its name, its environment, and which surfaces it
+  can actually offer -- rather than flickering through an unknown state while
+  JavaScript asks.
+
+  The `data-*` attributes on <body> are that identity. They decide what is
+  *offered*; they are not the gate. `require_admin` and `require_action` are, on
+  every request. Hiding a control the server would refuse anyway is a courtesy.
+  /health and /api/config are authoritative and the JS re-reads them, so a
+  deployment that gains or loses a key updates without a reload.
+
+  Nothing untrusted is ever assigned to innerHTML anywhere in this console --
+  see static/js/dom.js. Answer text comes from a language model, citation titles
+  from uploaded documents, audit rows from the database. The admin reading the
+  audit log is exactly the session worth stealing.
+#}
 <!doctype html>
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="color-scheme" content="dark light" />
   <title>{{ app_name }}</title>
-  <meta name="description" content="Answers employee HR questions from approved internal policy, with the evidence and the decision path shown." />
+  <meta name="description"
+        content="Agentic RAG copilot for internal HR policy and employee support." />
+  <meta name="color-scheme" content="dark light" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="/static/css/style.css" />
-  <!-- The angle brackets must be percent-encoded. Written raw, the browser
-       rejected the data URI and fell back to /favicon.ico, which this app does
-       not serve -- so every page load logged a 404 and the tab showed a blank
-       icon. Same encoding the grain texture in style.css uses. -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E&#129504;%3C/text%3E%3C/svg%3E" />
+  {# A serif for display and a sans for interface. The mix is what makes this
+     read as a designed product rather than a default; the serif is confined to
+     headings, the wordmark and the big figures, never to anything under 15px,
+     where it stops being legible and starts being decoration. #}
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500;600;650&family=JetBrains+Mono:wght@400;500;600&display=swap" />
+  <link rel="stylesheet" href="/static/css/style.css?v={{ version }}" />
+  <link rel="stylesheet" href="/static/css/views.css?v={{ version }}" />
+  <link rel="icon"
+        href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A7%A9%3C/text%3E%3C/svg%3E" />
 </head>
 
 <body
+  data-admin="{{ 'true' if admin_enabled else 'false' }}"
+  data-hr="{{ 'true' if hr_enabled else 'false' }}"
+  data-byok="{{ 'true' if byok_enabled else 'false' }}"
+  data-demo="{{ 'true' if public_demo else 'false' }}"
+  data-server-llm="{{ 'true' if server_llm else 'false' }}"
+  data-agent-mode="{{ agent_mode }}"
+  data-retrieval-mode="{{ retrieval_mode }}"
   data-env="{{ app_env }}"
-  data-admin="{{ 'on' if admin_enabled else 'off' }}"
   data-version="{{ version }}"
 >
-  <!-- Decorative only: a slow gradient mesh and a grain overlay. Both are
-       pointer-events:none and aria-hidden so they never touch the reading
-       order or intercept a click. -->
-  <div class="aurora" aria-hidden="true">
-    <span class="aurora__blob aurora__blob--a"></span>
-    <span class="aurora__blob aurora__blob--b"></span>
-    <span class="aurora__blob aurora__blob--c"></span>
+
+{# --- Icon sprite. One <symbol> per icon, referenced with <use>, so an icon
+     used in six places is one copy of its path data. Inline rather than a
+     sprite file because it is 2 KB and a second request for 2 KB is the
+     request that is slow. --#}
+<svg hidden aria-hidden="true">
+  <symbol id="i-chat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.3 9.3 0 0 1-2.8-.4L3 21l1.5-4.2A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z"/>
+  </symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 3v18h18M7 15v3M12 9v9M17 5v13"/>
+  </symbol>
+  <symbol id="i-agents" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/>
+    <path d="M12 7.5v4.5M12 12 6.5 16.8M12 12l5.5 4.8"/>
+  </symbol>
+  <symbol id="i-pipeline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="7" height="6" rx="1.5"/><rect x="14" y="3" width="7" height="6" rx="1.5"/>
+    <rect x="8.5" y="15" width="7" height="6" rx="1.5"/><path d="M6.5 9v3h11V9M12 12v3"/>
+  </symbol>
+  <symbol id="i-book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13Z"/><path d="M4 19.5V20h16v-3"/>
+  </symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+  </symbol>
+  <symbol id="i-log" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>
+  </symbol>
+  <symbol id="i-key" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="7.5" cy="15.5" r="4"/><path d="M10.5 12.5 20 3M16 3h4v4"/>
+  </symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M19 5l-1.5 1.5M6.5 17.5 5 19"/>
+  </symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a6.6 6.6 0 0 0 9.8 9.8Z"/>
+  </symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <path d="M4 7h16M4 12h16M4 17h16"/>
+  </symbol>
+  <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 12h15M13 6l6 6-6 6"/>
+  </symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <path d="M12 5v14M5 12h14"/>
+  </symbol>
+  <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <path d="M6 6l12 12M18 6 6 18"/>
+  </symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/>
+  </symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+    <path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>
+  </symbol>
+  <symbol id="i-note" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 4h16v10l-6 6H4z"/><path d="M14 20v-6h6"/>
+  </symbol>
+</svg>
+
+<div class="shell" id="shell" data-rail="wide">
+
+  {# --- Brand ---------------------------------------------------------- #}
+  <div class="brand">
+    <button class="brand__burger" id="rail-toggle" title="Collapse the sidebar"
+            aria-label="Collapse the sidebar">
+      <svg width="20" height="20"><use href="#i-menu"/></svg>
+    </button>
+    <span class="brand__mark" aria-hidden="true">HR</span>
+    <span class="brand__text">
+      <span class="brand__name">HR Copilot</span>
+      <span class="brand__sub">Agentic RAG</span>
+    </span>
   </div>
-  <div class="grain" aria-hidden="true"></div>
 
-  <div class="shell">
+  {# --- Topbar --------------------------------------------------------- #}
+  <header class="topbar">
+    <h1 class="topbar__title" id="view-title">Ask</h1>
+    <span class="topbar__spacer"></span>
+    <div class="topbar__actions">
+      <button class="pill pill--brand" id="mode-pill" type="button"
+              title="Which orchestration answers the next question">
+        <span id="mode-text">{{ agent_mode }}</span>
+      </button>
+      <button class="pill" id="health-pill" type="button" title="Deployment health">
+        <span class="pulse" id="health-dot"></span>
+        <span id="health-text">checking</span>
+      </button>
+      <button class="btn btn--ghost btn--icon" id="inspector-toggle"
+              title="Show or hide the answer inspector">
+        <svg width="18" height="18"><use href="#i-note"/></svg>
+      </button>
+      <button class="btn btn--ghost btn--icon" id="key-open" title="API key">
+        <svg width="18" height="18"><use href="#i-key"/></svg>
+      </button>
+      <button class="btn btn--ghost btn--icon" id="theme-toggle" title="Switch theme">
+        <svg width="18" height="18" id="theme-icon"><use href="#i-sun"/></svg>
+      </button>
+    </div>
+  </header>
 
-    <!-- ── Rail ─────────────────────────────────────────────────────────── -->
-    <aside class="rail">
-      <div class="rail__mark" title="{{ app_name }}">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M12 2 3 6.5v7c0 5 3.9 8.2 9 8.5 5.1-.3 9-3.5 9-8.5v-7L12 2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-          <path d="M8.5 12.2 11 14.7l4.6-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </div>
+  {# --- Rail ----------------------------------------------------------- #}
+  <nav class="rail" aria-label="Sections">
+    <div class="rail__group">
+      <button class="rail__btn is-active" data-view="ask" aria-current="page" title="Ask a question">
+        <svg><use href="#i-chat"/></svg><span class="rail__label">Ask</span>
+      </button>
+      <button class="rail__btn" data-view="dashboard" title="Live metrics">
+        <svg><use href="#i-chart"/></svg><span class="rail__label">Dashboard</span>
+      </button>
+      <button class="rail__btn" data-view="agents" title="The agent team">
+        <svg><use href="#i-agents"/></svg><span class="rail__label">Agents</span>
+      </button>
+      <button class="rail__btn" data-view="pipeline" title="How it works">
+        <svg><use href="#i-pipeline"/></svg><span class="rail__label">Pipeline</span>
+      </button>
+    </div>
 
-      <nav class="rail__nav" aria-label="Sections">
-        <button class="rail__btn is-active" data-view="chat" aria-current="page" title="Ask a question">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.9 9.9 0 0 1-3.4-.6L3 21l1.9-4.9A8.2 8.2 0 0 1 3.6 11.5a8.4 8.4 0 0 1 9-8.4 8.4 8.4 0 0 1 8.4 8.4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-          <span class="rail__label">Ask</span>
-        </button>
-        <button class="rail__btn" data-view="overview" title="Project overview">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19.5V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M8 16v-3m4 3V9m4 7v-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3 19.5h18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          <span class="rail__label">Overview</span>
-        </button>
-        <button class="rail__btn" data-view="knowledge" data-admin-only title="Add to the knowledge base">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          <span class="rail__label">Ingest</span>
-        </button>
-        <button class="rail__btn" data-view="audit" data-admin-only title="Audit log">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19V6a2 2 0 0 1 2-2h8l6 6v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M14 4v6h6M8 14h6M8 17h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-          <span class="rail__label">Audit</span>
-        </button>
-      </nav>
+    <div class="rail__group" data-admin-only data-hr-only>
+      <div class="rail__heading">Operate</div>
+      <button class="rail__btn" data-view="knowledge" data-hr-only title="Add to the knowledge base">
+        <svg><use href="#i-upload"/></svg><span class="rail__label">Knowledge</span>
+      </button>
+      <button class="rail__btn" data-view="approvals" data-hr-only title="Approval queue">
+        <svg><use href="#i-check"/></svg>
+        <span class="rail__label">Approvals</span>
+        <span class="rail__badge" id="approvals-badge" hidden>0</span>
+      </button>
+      <button class="rail__btn" data-view="audit" data-admin-only title="Audit log">
+        <svg><use href="#i-log"/></svg><span class="rail__label">Audit</span>
+      </button>
+    </div>
 
-      <div class="rail__foot">
-        <button class="rail__btn rail__btn--ghost" id="theme-toggle" title="Switch theme">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M21 13.5A9 9 0 0 1 10.5 3a9 9 0 1 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-          <span class="rail__label">Theme</span>
-        </button>
-        <button class="rail__btn rail__btn--ghost" id="admin-open" title="Admin key">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14.5 9.5a4 4 0 1 0-3.2 3.9L13 15l2 .3.3 2L17 19l3-3-5.5-5.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-          <span class="rail__label">Key</span>
-        </button>
-      </div>
-    </aside>
+    <div class="rail__group">
+      <div class="rail__heading">Reference</div>
+      <button class="rail__btn" data-view="settings" title="Keys and configuration">
+        <svg><use href="#i-sliders"/></svg><span class="rail__label">Settings</span>
+      </button>
+    </div>
 
-    <!-- ── Stage ────────────────────────────────────────────────────────── -->
-    <div class="stage">
+    <div class="rail__foot">
+      <div>{{ app_name }}</div>
+      <div>v{{ version }} &middot; {{ app_env }}</div>
+    </div>
+  </nav>
 
-      <header class="topbar">
-        <div class="topbar__id">
-          <h1 class="topbar__title">{{ app_name }}</h1>
-          <p class="topbar__sub">Agentic RAG over approved internal policy</p>
-        </div>
-        <div class="topbar__meta">
-          <span class="chip chip--env" data-env="{{ app_env }}">{{ app_env }}</span>
-          <span class="chip chip--ver">v{{ version }}</span>
-          <button class="pill pill--health" id="health-pill" type="button" title="Deployment health">
-            <span class="pulse" id="health-dot"></span>
-            <span id="health-text">checking…</span>
-          </button>
-        </div>
-      </header>
+  {# --- Stage ---------------------------------------------------------- #}
+  <main class="stage">
 
-      <main class="views">
+    {# ============================ ASK ============================= #}
+    <section class="view is-active" id="view-ask">
+      <div class="ask" id="ask" data-inspector="on">
 
-        <!-- ══ CHAT ══════════════════════════════════════════════════════ -->
-        <section class="view is-active" id="view-chat">
-          <div class="chat">
-
-            <div class="thread" id="thread" aria-live="polite">
+        <div class="convo">
+          <div class="thread" id="thread" aria-live="polite">
+            <div class="thread__inner" id="thread-inner">
               <div class="welcome" id="welcome">
-                <div class="welcome__glow" aria-hidden="true"></div>
-                <p class="welcome__kicker">Grounded, graded, and shown its working</p>
-                <h2 class="welcome__title">
-                  Ask about <span class="grad">leave, pay, benefits</span><br />or anything else in the handbook.
-                </h2>
-                <p class="welcome__body">
-                  Every answer names the policy document it came from. When internal policy does not
-                  cover a question, the agent says so instead of inventing one.
+                <span class="welcome__kicker">
+                  <span class="pulse"></span> grounded in your own policy
+                </span>
+                <h1>Ask HR anything.</h1>
+                <p>
+                  Every answer is retrieved from approved internal policy, graded
+                  before it is written, and shown with the documents it rests on.
+                  If the knowledge base does not cover it, this says so instead of
+                  guessing.
                 </p>
                 <div class="suggest" id="suggest">
-                  <button class="suggest__item" data-q="How many PTO days do I get per year?">
-                    <span class="suggest__emoji">🌴</span>How many PTO days do I get per year?
-                  </button>
-                  <button class="suggest__item" data-q="What is the notice period if I resign?">
-                    <span class="suggest__emoji">📮</span>What is the notice period if I resign?
-                  </button>
-                  <button class="suggest__item" data-q="How do I claim travel expenses?">
-                    <span class="suggest__emoji">🧾</span>How do I claim travel expenses?
-                  </button>
-                  <button class="suggest__item" data-q="What are the core working hours?">
-                    <span class="suggest__emoji">⏰</span>What are the core working hours?
-                  </button>
+                  <button class="chip">How many days of paid time off do I get?</button>
+                  <button class="chip">What is the notice period if I resign?</button>
+                  <button class="chip">When are approved expenses paid out?</button>
+                  <button class="chip">Can I work fully remotely from another city?</button>
+                  <button class="chip">I'm a contractor going on parental leave mid-notice &mdash; what am I owed?</button>
+                  <button class="chip">What is the capital of France?</button>
                 </div>
               </div>
             </div>
-
-            <form class="composer" id="composer" autocomplete="off">
-              <div class="composer__box">
-                <textarea
-                  id="question"
-                  class="composer__input"
-                  rows="1"
-                  maxlength="3000"
-                  placeholder="Ask about a policy…  (Enter to send, Shift+Enter for a new line)"
-                  aria-label="Your question"
-                ></textarea>
-                <div class="composer__actions">
-                  <span class="composer__count" id="char-count">0 / 3000</span>
-                  <button type="submit" class="btn btn--send" id="send" disabled>
-                    <span class="btn__label">Ask</span>
-                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 12 16-8-6 8 6 8-16-8Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-                  </button>
-                </div>
-              </div>
-              <p class="composer__hint">
-                Answers come from your organisation's approved knowledge base. Verify anything
-                you are about to act on with HR.
-              </p>
-            </form>
           </div>
 
-          <!-- ── Inspector ────────────────────────────────────────────── -->
-          <aside class="inspector" id="inspector">
-            <div class="inspector__tabs" role="tablist">
-              <button class="tab" role="tab" data-tab="chats">Chats</button>
-              <button class="tab is-active" role="tab" data-tab="graph">Workflow</button>
-              <button class="tab" role="tab" data-tab="trace">Trace</button>
-              <button class="tab" role="tab" data-tab="sources">Sources</button>
-            </div>
-
-            <!-- Conversations -------------------------------------------- -->
-            <div class="panel" id="panel-chats" role="tabpanel">
-              <div class="panel__head panel__head--row">
-                <div>
-                  <h3>Conversations</h3>
-                  <p>Kept in this browser only.</p>
-                </div>
-                <button class="btn btn--primary btn--sm" id="chat-new" title="Start a new conversation">
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                  <span class="btn__label">New</span>
+          <form class="composer" id="composer" autocomplete="off">
+            <div class="composer__inner">
+              <div class="composer__box">
+                <textarea id="question" rows="1" maxlength="3000"
+                          placeholder="Ask about leave, pay, benefits, conduct, working arrangements…"
+                          aria-label="Your question"></textarea>
+                <button type="submit" class="btn btn--send" id="send" disabled
+                        title="Send" aria-label="Send">
+                  <svg width="18" height="18"><use href="#i-send"/></svg>
                 </button>
               </div>
-              <div class="convos" id="convos"></div>
-              <p class="convos__note">
-                Follow-ups resolve against the conversation, so you can ask
-                “what about contractors?” after a question about dental cover.
-              </p>
+              <div class="composer__foot">
+                <span id="composer-hint">Enter to send &middot; Shift+Enter for a new line</span>
+                <span class="composer__count" id="char-count">0 / 3000</span>
+              </div>
             </div>
+          </form>
+        </div>
 
-            <!-- Workflow ------------------------------------------------- -->
+        <aside class="inspector" id="inspector" aria-label="Answer inspector">
+          <div class="tabs" role="tablist">
+            <button class="tab is-active" data-panel="graph" role="tab">Graph</button>
+            <button class="tab" data-panel="trace" role="tab">
+              Trace<span class="tab__n" id="n-trace"></span>
+            </button>
+            <button class="tab" data-panel="timing" role="tab">
+              Timing<span class="tab__n" id="n-timing"></span>
+            </button>
+            <button class="tab" data-panel="sources" role="tab">
+              Sources<span class="tab__n" id="n-sources"></span>
+            </button>
+            <button class="tab" data-panel="pad" role="tab">
+              Scratchpad<span class="tab__n" id="n-pad"></span>
+            </button>
+            <button class="tab" data-panel="cost" role="tab">Cost</button>
+            <button class="tab" data-panel="chats" role="tab">Chats</button>
+          </div>
+
+          <div class="panels" id="panels">
             <div class="panel is-active" id="panel-graph" role="tabpanel">
-              <div class="panel__head">
-                <h3>Decision graph</h3>
-                <p>The path this answer actually took.</p>
+              <p class="panel__hint">
+                The compiled graph, drawn from <code>/api/graph</code> rather than
+                from a copy in this page &mdash; so a node added to the agent
+                appears here without anyone editing JavaScript. Lit nodes are the
+                ones the last answer actually went through.
+              </p>
+              <div class="graph-wrap">
+                <svg class="graph" id="graph" role="img"
+                     aria-label="The agent graph, with the path taken highlighted"></svg>
+                <div class="graph__legend">
+                  <span><i style="background: var(--node-visited)"></i>visited</span>
+                  <span><i style="background: var(--node-answer)"></i>answered here</span>
+                  <span><i style="background: var(--node-escalate)"></i>escalated</span>
+                  <span><i style="background: var(--surface-3)"></i>not taken</span>
+                </div>
               </div>
-
-              <svg class="graph" id="graph" viewBox="0 0 400 545" role="img"
-                   aria-label="The eleven-node agent graph, with the path taken highlighted">
-                <defs>
-                  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
-                          markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                    <path d="M0 0 10 5 0 10z" fill="currentColor" />
-                  </marker>
-                </defs>
-
-                <!-- contextualize sits above the original shape. Rather than
-                     renumbering forty coordinates, the rest of the graph is
-                     translated down as one group and this node is drawn in the
-                     space that opens up. -->
-                <g class="graph__edges" fill="none" stroke-width="1.6" marker-end="url(#arrow)">
-                  <path data-edge="start-contextualize" d="M200 19 L200 28" />
-                </g>
-                <g class="graph__nodes">
-                  <circle class="graph__start" cx="200" cy="12" r="5" />
-                  <g class="node" data-node="contextualize">
-                    <rect x="144" y="30" width="112" height="30" rx="15" />
-                    <text x="200" y="49">contextualize</text>
-                  </g>
-                </g>
-
-                <g transform="translate(0, 45)">
-                <g class="graph__edges" fill="none" stroke-width="1.6" marker-end="url(#arrow)">
-                  <path data-edge="contextualize-route" d="M200 24 L200 43" />
-                  <path data-edge="route-direct"         d="M200 75 C200 100 76 96 76 107" />
-                  <path data-edge="route-retrieve"       d="M200 75 C200 100 296 96 296 107" />
-                  <path data-edge="retrieve-gradekb"     d="M296 139 L296 171" />
-                  <path data-edge="gradekb-genkb"        d="M296 203 C296 228 168 224 168 235" />
-                  <path data-edge="gradekb-web"          d="M296 203 L296 235" />
-                  <path data-edge="web-gradeweb"         d="M296 267 L296 299" />
-                  <path data-edge="gradeweb-genweb"      d="M296 331 C296 356 168 352 168 363" />
-                  <path data-edge="gradeweb-rewrite"     d="M296 331 L296 363" />
-                  <path data-edge="gradeweb-insufficient" d="M240 316 C130 326 76 372 76 427" />
-                  <path data-edge="rewrite-retrieve"     d="M352 380 C378 380 380 360 380 252 C380 160 378 124 352 124" />
-                </g>
-
-                <g class="graph__nodes">
-                  <g class="node" data-node="route">
-                    <rect x="144" y="45" width="112" height="30" rx="15" />
-                    <text x="200" y="64">route</text>
-                  </g>
-                  <g class="node" data-node="direct" data-terminal="1">
-                    <rect x="20" y="109" width="112" height="30" rx="15" />
-                    <text x="76" y="128">direct answer</text>
-                  </g>
-                  <g class="node" data-node="retrieve">
-                    <rect x="240" y="109" width="112" height="30" rx="15" />
-                    <text x="296" y="128">retrieve kb</text>
-                  </g>
-                  <g class="node" data-node="gradekb">
-                    <rect x="240" y="173" width="112" height="30" rx="15" />
-                    <text x="296" y="192">grade kb</text>
-                  </g>
-                  <g class="node" data-node="genkb" data-terminal="1">
-                    <rect x="112" y="237" width="112" height="30" rx="15" />
-                    <text x="168" y="256">answer · kb</text>
-                  </g>
-                  <g class="node" data-node="web">
-                    <rect x="240" y="237" width="112" height="30" rx="15" />
-                    <text x="296" y="256">search web</text>
-                  </g>
-                  <g class="node" data-node="gradeweb">
-                    <rect x="240" y="301" width="112" height="30" rx="15" />
-                    <text x="296" y="320">grade web</text>
-                  </g>
-                  <g class="node" data-node="genweb" data-terminal="1">
-                    <rect x="112" y="363" width="112" height="30" rx="15" />
-                    <text x="168" y="382">answer · web</text>
-                  </g>
-                  <g class="node" data-node="rewrite">
-                    <rect x="240" y="363" width="112" height="30" rx="15" />
-                    <text x="296" y="382">rewrite query</text>
-                  </g>
-                  <g class="node" data-node="insufficient" data-terminal="1">
-                    <rect x="20" y="427" width="112" height="30" rx="15" />
-                    <text x="76" y="446">no evidence</text>
-                  </g>
-                </g>
-                </g>
-              </svg>
-
-              <ul class="legend">
-                <li><i class="dot dot--taken"></i>visited</li>
-                <li><i class="dot dot--idle"></i>not taken</li>
-                <li><i class="dot dot--term"></i>terminal</li>
-              </ul>
-
-              <div class="verdict" id="verdict" hidden>
-                <div class="verdict__row"><span>Route</span><b id="v-route">—</b></div>
-                <div class="verdict__row"><span>KB grade</span><b id="v-kb">—</b></div>
-                <div class="verdict__row"><span>Web grade</span><b id="v-web">—</b></div>
-                <div class="verdict__row"><span>Chunks</span><b id="v-chunks">—</b></div>
-                <div class="verdict__row"><span>Rewrites</span><b id="v-retry">—</b></div>
-                <div class="verdict__row"><span>Latency</span><b id="v-latency">—</b></div>
-              </div>
+              <div class="verdict" id="verdict" hidden></div>
             </div>
 
-            <!-- Trace ---------------------------------------------------- -->
             <div class="panel" id="panel-trace" role="tabpanel">
-              <div class="panel__head">
-                <h3>Execution trace</h3>
-                <p>One entry per node, in the order they ran.</p>
-              </div>
+              <p class="panel__hint">
+                One line per node, in the order they ran. A line marked amber is a
+                call that failed and was absorbed by a fallback &mdash; an outage
+                and a genuine absence of evidence produce the same answer, and only
+                this tells them apart.
+              </p>
               <ol class="trace" id="trace"></ol>
-              <p class="empty" id="trace-empty">Ask something and the agent's steps land here.</p>
+              <p class="empty" id="trace-empty">Ask something and the steps land here.</p>
             </div>
 
-            <!-- Sources -------------------------------------------------- -->
+            <div class="panel" id="panel-timing" role="tabpanel">
+              <p class="panel__hint">
+                Where the time went, from the in-process span tree. Self time, not
+                total: a nested span would otherwise be counted twice and the bars
+                would sum past the latency.
+              </p>
+              <div id="timing"></div>
+              <p class="empty" id="timing-empty">No spans yet.</p>
+            </div>
+
             <div class="panel" id="panel-sources" role="tabpanel">
-              <div class="panel__head">
-                <h3>Evidence</h3>
-                <p>The documents the answer rests on.</p>
-              </div>
+              <p class="panel__hint">
+                The documents the answer rests on. An HR answer you cannot check
+                against its source is not much use to the person acting on it.
+              </p>
               <div class="sources" id="sources"></div>
               <p class="empty" id="sources-empty">No citations yet.</p>
             </div>
-          </aside>
-        </section>
 
-        <!-- ══ OVERVIEW ══════════════════════════════════════════════════
-             A plain-language brief for a non-engineering reader: what the
-             problem was, what was built, and what was measured.
-
-             Every figure here is a measured one, sourced from README.md -- the
-             12-question retrieval benchmark, the labelled routing and grading
-             set, the corpus counts, and the test and lint gates. Nothing is
-             estimated. If a number changes, change it here and in the README
-             together: a stale claim on this page is worse than no page, because
-             this is the one screen read by someone who cannot check it against
-             the code.
-             ══════════════════════════════════════════════════════════════ -->
-        <section class="view" id="view-overview">
-          <div class="pane pane--wide">
-
-            <header class="pane__head">
-              <p class="brief__kicker">Project overview</p>
-              <h2>An HR copilot that will not invent policy</h2>
-              <p>
-                Built against the PeoplePrime brief in <code>docs/</code>. Everything below is
-                measured rather than asserted &mdash; the figures come from a 12-question retrieval
-                benchmark, a labelled routing and grading set, and the test suite.
+            <div class="panel" id="panel-pad" role="tabpanel">
+              <p class="panel__hint">
+                Shared working notes for this conversation. Add one and the next
+                turn sees it &mdash; the cheapest way to correct a wrong assumption
+                without retyping your question.
               </p>
-            </header>
-
-            <!-- Numbers -------------------------------------------------- -->
-            <div class="brief__metrics">
-              <div class="metric">
-                <b class="grad">21/21</b>
-                <span>routing &amp; grading decisions correct on a labelled set</span>
-              </div>
-              <div class="metric">
-                <b class="grad">0.15</b>
-                <span>similarity gate, set inside the measured 0.099&ndash;0.171 gap between out-of-domain and correct chunks</span>
-              </div>
-              <div class="metric">
-                <b class="grad">228</b>
-                <span>tests, offline, no credentials &mdash; ruff clean at zero findings</span>
-              </div>
-              <div class="metric">
-                <b class="grad">11 &rarr; 31</b>
-                <span>policy documents chunked, covering all 9 areas the brief names</span>
+              <div class="pad" id="pad"></div>
+              <p class="empty" id="pad-empty">No notes yet.</p>
+              <div class="pad__compose">
+                <input class="input" id="pad-text" maxlength="1200"
+                       placeholder="e.g. I'm a contractor in the Bangalore office" />
+                <button class="btn btn--sm btn--primary" id="pad-add" title="Add a note">
+                  <svg width="14" height="14"><use href="#i-plus"/></svg>
+                </button>
               </div>
             </div>
 
-            <!-- Problem and solution ------------------------------------- -->
-            <div class="brief__grid">
-              <article class="brief__card">
-                <span class="brief__tag">Problem</span>
-                <p>
-                  HR fields the same questions about leave, pay, notice periods and benefits every
-                  week. A general-purpose chatbot answers them from model memory &mdash; confidently,
-                  fluently, and sometimes wrongly. For an entitlement an employee is about to act on,
-                  a plausible invented answer is worse than no answer, and afterwards there is no
-                  record of what was said to whom.
-                </p>
-              </article>
-
-              <article class="brief__card brief__card--alt">
-                <span class="brief__tag brief__tag--alt">Solution</span>
-                <p>
-                  An <b>agentic</b> RAG system: an 11-node LangGraph agent that retrieves from an
-                  approved policy corpus, <b>grades its own evidence before answering</b>, rewrites
-                  the question and retries when retrieval was weak, falls back to cited web search,
-                  and &mdash; if nothing holds up &mdash; says so instead of guessing. Every answer
-                  carries its sources and the path the agent took to reach it.
-                </p>
-              </article>
-            </div>
-
-            <!-- Architecture --------------------------------------------- -->
-            <h3 class="brief__h">Solution architecture</h3>
-            <p class="brief__lede">
-              Four stages. The similarity gate and the evidence grader do different jobs and neither
-              replaces the other: the gate rejects out-of-domain <em>questions</em> before a model
-              call is spent, the grader rejects irrelevant <em>evidence</em> for questions that are
-              in domain.
-            </p>
-
-            <ol class="flow">
-              <li class="flow__step">
-                <span class="flow__n">1</span>
-                <div class="flow__body">
-                  <b>Ingest</b>
-                  <p>
-                    Markdown, TXT, PDF and DOCX &rarr; heading-aware chunking at 1000 characters with
-                    150 overlap &rarr; 384-dimension embeddings generated locally. Chunk IDs are
-                    deterministic, so re-ingesting an edited policy updates it in place, and
-                    withdrawn policy is pruned rather than left answering questions.
-                  </p>
-                </div>
-              </li>
-              <li class="flow__step">
-                <span class="flow__n">2</span>
-                <div class="flow__body">
-                  <b>Retrieve and gate</b>
-                  <p>
-                    Pinecone serverless with cosine similarity, internal policy and public content
-                    held in separate namespaces so one retrieval never mixes them. A raw-cosine gate
-                    at 0.15 drops out-of-domain questions before any model is called.
-                  </p>
-                </div>
-              </li>
-              <li class="flow__step">
-                <span class="flow__n">3</span>
-                <div class="flow__body">
-                  <b>Grade and decide</b>
-                  <p>
-                    An LLM judges whether the retrieved evidence actually answers the question, as a
-                    constrained <code>good</code> / <code>weak</code> decision rather than free text.
-                    Weak evidence triggers one query rewrite, then a web-search fallback, then an
-                    explicit admission that nothing covered it.
-                  </p>
-                </div>
-              </li>
-              <li class="flow__step">
-                <span class="flow__n">4</span>
-                <div class="flow__body">
-                  <b>Answer and record</b>
-                  <p>
-                    The answer arrives with its cited documents and a per-node execution trace, both
-                    shown in this console. Every question and decision is written to an audit log
-                    behind an admin key &mdash; the record HR needs to answer &ldquo;what was this
-                    person told, and on what basis?&rdquo;
-                  </p>
-                </div>
-              </li>
-            </ol>
-
-            <!-- STAR ------------------------------------------------------ -->
-            <h3 class="brief__h">What was built, and what it achieved</h3>
-            <p class="brief__lede">
-              Six pieces of work, each written as Situation &rarr; Task &rarr; Action &rarr; Result.
-            </p>
-
-            <ul class="star">
-              <li class="star__item">
-                <h4>Stopped the system answering from memory</h4>
-                <p><i>S</i><span>A single-pass RAG chatbot returns its top matches whatever it is asked, so a question the handbook does not cover still produces a fluent, sourceless answer about company policy.</span></p>
-                <p><i>T</i><span>Make &ldquo;internal policy does not cover this&rdquo; a real, reachable outcome rather than a fallback nobody wired up.</span></p>
-                <p><i>A</i><span>Built an 11-node LangGraph agent that grades retrieved evidence with a constrained LLM decision before generating, then rewrites the query and retries, then falls back to cited web search, then declines &mdash; each an explicit branch in the graph.</span></p>
-                <p><i>R</i><span><b>21 of 21 decisions correct</b> on a labelled set (router 16/16, grader 7/7). Every answer now resolves to a cited internal document, a cited URL, or an explicit refusal &mdash; and the console shows which.</span></p>
-              </li>
-
-              <li class="star__item">
-                <h4>Calibrated the relevance gate from measurement, not intuition</h4>
-                <p><i>S</i><span>Vector search always returns its top results, so an unrelated question such as &ldquo;what is the capital of France?&rdquo; still retrieves confident-looking HR chunks.</span></p>
-                <p><i>T</i><span>Find a threshold that rejects out-of-domain questions without discarding real ones, and be able to show why that number and not another.</span></p>
-                <p><i>A</i><span>Ran a 12-question benchmark across the corpus and measured similarity separately for correct-source, wrong-source and out-of-domain chunks, then placed the gate inside the observed gap.</span></p>
-                <p><i>R</i><span>Out-of-domain peaked at <b>0.099</b> against a weakest correct chunk of <b>0.171</b>, so a gate at <b>0.15</b> drops every out-of-domain result while losing no in-domain one. Re-measured after the corpus grew from 6 documents to 11: out-of-domain fell to <b>0.078</b>, so the calibration still holds.</span></p>
-              </li>
-
-              <li class="star__item">
-                <h4>Made the knowledge base safe for HR to update</h4>
-                <p><i>S</i><span>Policy arrives as Word files and PDFs and it changes; a superseded document left in the index keeps answering questions with withdrawn policy.</span></p>
-                <p><i>T</i><span>One ingestion path for every format, reconciling the search index against what is actually approved today.</span></p>
-                <p><i>A</i><span>Built a multi-format loader covering Markdown, TXT, PDF and DOCX including table content, with heading-aware chunking, deterministic chunk IDs, and orphan pruning on every corpus rebuild.</span></p>
-                <p><i>R</i><span><b>11 documents indexed as 31 chunks</b>, covering all <b>9</b> HR areas the brief names. An edited policy updates in place instead of duplicating, and a deleted one leaves the index. HR staff add documents through this console, admin-gated.</span></p>
-              </li>
-
-              <li class="star__item">
-                <h4>Made every answer auditable without leaking employee questions</h4>
-                <p><i>S</i><span>&ldquo;What did it tell someone about the notice period in March?&rdquo; is a question the business will eventually have to answer &mdash; and because the agent is not deterministic, re-running the question later proves nothing.</span></p>
-                <p><i>T</i><span>Record the decision trail at the moment of answering, while keeping HR questions inside the deployment.</span></p>
-                <p><i>A</i><span>Added a SQLite audit log capturing the question, answer, route, both grades, citations, the full node trace and latency, behind an admin-only API. Put third-party tracing behind an explicit switch that is off by default and payload-redacted when on.</span></p>
-                <p><i>R</i><span>Every answer is reconstructable from the log, with a grounded-answer rate that exposes a broken ingest or an exhausted quota from outside. Under default settings <b>no employee question leaves the deployment</b>.</span></p>
-              </li>
-
-              <li class="star__item">
-                <h4>Made a provider outage cost one source, not the answer</h4>
-                <p><i>S</i><span>The agent depends on three external services. Any one failing mid-question would abort the whole run and return an error to the employee.</span></p>
-                <p><i>T</i><span>Degrade gracefully rather than fail, and prove it without spending a paid API call to do so.</span></p>
-                <p><i>A</i><span>Wrapped every network call in a guard that converts a failure into a recorded fallback &mdash; a retrieval outage becomes &ldquo;no evidence&rdquo;, which routes to web search &mdash; and confined provider response shapes to one adapter module. Every client is injected, so the suite runs against fakes.</span></p>
-                <p><i>R</i><span><b>230 tests pass offline with no credentials</b> and <b>ruff reports zero findings</b>. An outage downgrades to an alternative source and is labelled degraded in the trace, so it is never mistaken for a genuine gap in policy.</span></p>
-              </li>
-
-              <li class="star__item">
-                <h4>Made the admin surface fail closed</h4>
-                <p><i>S</i><span>Whoever can upload to the knowledge base can change what company policy appears to say, and the audit log holds every employee&rsquo;s question and the answer they were given.</span></p>
-                <p><i>T</i><span>Ensure a misconfiguration turns the admin surface <em>off</em>, never open.</span></p>
-                <p><i>A</i><span>Gated upload and audit behind an API key with no default value and a constant-time comparison, enforced an upload size cap while the file streams, sanitised uploaded filenames, held secrets in redacting types, and kept provider error text out of every HTTP response.</span></p>
-                <p><i>R</i><span>With no key configured the admin endpoints refuse <b>every</b> request rather than accepting any. Production additionally withholds the API documentation and refuses to start without a key.</span></p>
-              </li>
-            </ul>
-
-            <!-- Stack ----------------------------------------------------- -->
-            <h3 class="brief__h">Technology</h3>
-            <div class="stack">
-              <div class="stack__row">
-                <span class="stack__k">Agent</span>
-                <div class="stack__v">
-                  <span class="tagline">LangGraph</span><span class="tagline">LangChain</span>
-                  <span class="tagline">Groq &middot; gpt-oss-20b</span><span class="tagline">Tavily search</span>
-                  <span class="tagline">Pydantic structured output</span>
-                </div>
-              </div>
-              <div class="stack__row">
-                <span class="stack__k">Retrieval</span>
-                <div class="stack__v">
-                  <span class="tagline">Pinecone serverless</span><span class="tagline">all-MiniLM-L6-v2</span>
-                  <span class="tagline">384-d local embeddings</span><span class="tagline">cosine + 0.15 gate</span>
-                  <span class="tagline">metadata filters</span>
-                </div>
-              </div>
-              <div class="stack__row">
-                <span class="stack__k">Ingestion</span>
-                <div class="stack__v">
-                  <span class="tagline">pypdf</span><span class="tagline">python-docx</span>
-                  <span class="tagline">BeautifulSoup</span><span class="tagline">recursive splitter</span>
-                </div>
-              </div>
-              <div class="stack__row">
-                <span class="stack__k">Service</span>
-                <div class="stack__v">
-                  <span class="tagline">FastAPI</span><span class="tagline">SQLite audit log</span>
-                  <span class="tagline">pydantic-settings</span><span class="tagline">Jinja2</span>
-                  <span class="tagline">vanilla JS console</span>
-                </div>
-              </div>
-              <div class="stack__row">
-                <span class="stack__k">Quality</span>
-                <div class="stack__v">
-                  <span class="tagline">pytest &middot; 228 offline</span><span class="tagline">ruff</span>
-                  <span class="tagline">LangSmith &middot; redacted</span><span class="tagline">Python 3.13</span>
-                </div>
-              </div>
-            </div>
-
-            <p class="brief__foot">
-              Providers are swappable without touching the agent: the chat model and the embedding
-              model are chosen independently, and both the Groq and the OpenAI paths are verified
-              against the live services.
-            </p>
-
-          </div>
-        </section>
-
-        <!-- ══ KNOWLEDGE ═════════════════════════════════════════════════ -->
-        <section class="view" id="view-knowledge">
-          <div class="pane">
-            <header class="pane__head">
-              <h2>Add to the knowledge base</h2>
-              <p>
-                Uploads go straight into the private namespace the copilot answers from. Whoever can
-                upload here can change what company policy appears to say — so this is admin only.
+            <div class="panel" id="panel-cost" role="tabpanel">
+              <p class="panel__hint">
+                What the last answer spent against its ceilings. The dollar figure
+                is a <strong>projection</strong> &mdash; an estimated token count
+                times a published list price &mdash; not an invoice.
               </p>
-            </header>
+              <div class="budget-bars" id="budget"></div>
+              <div class="verdict" id="cost-detail" hidden></div>
+            </div>
 
-            <div class="drop" id="drop" tabindex="0" role="button"
-                 aria-label="Choose a document to upload">
-              <input type="file" id="file" accept=".md,.markdown,.txt,.pdf,.docx" hidden />
-              <div class="drop__ring" aria-hidden="true"></div>
-              <div class="drop__inner">
-                <div class="drop__icon">
-                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
-                </div>
-                <p class="drop__title">Drop a policy here</p>
-                <p class="drop__sub">or <u>browse</u> — md, txt, pdf, docx</p>
-                <p class="drop__file" id="drop-file" hidden></p>
+            <div class="panel" id="panel-chats" role="tabpanel">
+              <p class="panel__hint">
+                Conversations live in this browser, not on the server. There is no
+                identity here to scope them to, and an endpoint that listed them
+                would let anyone read anyone else's HR questions.
+              </p>
+              <div style="display:flex; gap:8px; margin-bottom:12px">
+                <button class="btn btn--sm btn--primary" id="chat-new">
+                  <svg width="14" height="14"><use href="#i-plus"/></svg> New chat
+                </button>
+                <button class="btn btn--sm btn--ghost" id="chat-clear">Clear all</button>
               </div>
+              <div class="convos" id="convos"></div>
             </div>
-
-            <div class="upload-form">
-              <label class="field">
-                <span class="field__label">Department</span>
-                <input type="text" id="department" value="general" maxlength="64"
-                       placeholder="general" />
-                <span class="field__hint">Becomes a retrieval filter. Lowercase, no spaces.</span>
-              </label>
-              <button class="btn btn--primary" id="do-upload" disabled>
-                <span class="btn__label">Index document</span>
-              </button>
-            </div>
-
-            <div class="receipts" id="receipts"></div>
           </div>
-        </section>
-
-        <!-- ══ AUDIT ═════════════════════════════════════════════════════ -->
-        <section class="view" id="view-audit">
-          <div class="pane">
-            <header class="pane__head pane__head--row">
-              <div>
-                <h2>Audit log</h2>
-                <p>Every answered question, with the decisions that produced it.</p>
-              </div>
-              <button class="btn btn--ghost" id="audit-refresh">
-                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                <span class="btn__label">Refresh</span>
-              </button>
-            </header>
-
-            <div class="stats" id="stats"></div>
-
-            <div class="table-wrap">
-              <table class="table" id="audit-table">
-                <thead>
-                  <tr>
-                    <th>#</th><th>Asked</th><th>Question</th>
-                    <th>Source</th><th>Grades</th><th>ms</th>
-                  </tr>
-                </thead>
-                <tbody id="audit-body"></tbody>
-              </table>
-            </div>
-            <p class="empty" id="audit-empty">Nothing logged yet.</p>
-          </div>
-        </section>
-
-      </main>
-    </div>
-  </div>
-
-  <!-- ── Admin key dialog ───────────────────────────────────────────────── -->
-  <dialog class="dialog" id="admin-dialog">
-    <form method="dialog" class="dialog__body" id="admin-form">
-      <h3>Admin key</h3>
-      <p>
-        Needed for uploading documents and reading the audit log. Held in this tab only
-        (<code>sessionStorage</code>) and sent as an <code>X-Admin-Key</code> header — closing the
-        tab forgets it.
-      </p>
-      <input type="password" id="admin-key" placeholder="X-Admin-Key" autocomplete="off" />
-      <div class="dialog__actions">
-        <button class="btn btn--ghost" value="cancel" type="submit">Cancel</button>
-        <button class="btn btn--primary" value="save" type="submit" id="admin-save">Save key</button>
+        </aside>
       </div>
-      <button class="dialog__clear" type="button" id="admin-clear">Forget the stored key</button>
-    </form>
-  </dialog>
+    </section>
 
-  <div class="toasts" id="toasts" aria-live="polite"></div>
+    {# ========================== DASHBOARD ========================== #}
+    <section class="view view--scroll" id="view-dashboard">
+      <div class="page page--wide">
+        <div class="page__head">
+          <span class="page__eyebrow"><span class="pulse"></span> live from this deployment</span>
+          <h2 class="page__title">Answer health</h2>
+          <p class="page__lede">
+            Everything here is an aggregate read from <code>/api/metrics</code>, which
+            is open for the same reason the Pipeline page is: it describes the
+            system, never its contents. Individual questions and answers stay
+            behind the admin key, because that is what they are.
+          </p>
+          <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap">
+            <button class="btn btn--sm" id="metrics-refresh">
+              <svg width="14" height="14"><use href="#i-refresh"/></svg> Refresh
+            </button>
+            <span class="pill" id="metrics-age">—</span>
+          </div>
+        </div>
 
-  <script src="/static/js/app.js" defer></script>
+        <div class="bento" id="tiles"></div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Where answers come from</h2>
+            <span class="section__note">
+              the share resting on internal policy is the number worth watching
+            </span>
+          </div>
+          <div class="grid grid--2">
+            <div class="card card--pad">
+              <svg class="chart" id="chart-source" viewBox="0 0 220 180"></svg>
+              <div class="legend" id="legend-source"></div>
+            </div>
+            <div class="card card--pad">
+              <h3 style="font-size:14.5px; margin-bottom:12px">Orchestration used</h3>
+              <svg class="chart" id="chart-mode" viewBox="0 0 320 180"></svg>
+              <div class="legend" id="legend-mode"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Latency</h2>
+            <span class="section__note">
+              percentiles over the newest 1,000 answers, not a mean &mdash; a p95 of
+              nine seconds and a mean of two describe the same deployment and only
+              one of them is what somebody waited for
+            </span>
+          </div>
+          <div class="card card--pad">
+            <svg class="chart" id="chart-latency" viewBox="0 0 640 200"></svg>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Capabilities</h2>
+            <span class="section__note">what this deployment can actually do right now</span>
+          </div>
+          <div class="caps" id="caps"></div>
+        </div>
+
+        <div class="section" id="model-section">
+          <div class="section__head">
+            <h2>Spend by model</h2>
+            <span class="section__note">
+              projected from estimated tokens and published list prices &mdash;
+              a ceiling and a dashboard, not an invoice
+            </span>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr>
+                <th>Model</th><th class="num">Answers</th>
+                <th class="num">Tokens</th><th class="num">Projected USD</th>
+              </tr></thead>
+              <tbody id="model-body"></tbody>
+            </table>
+          </div>
+          <p class="empty" id="model-empty" hidden>
+            Per-model spend is shown to HR and admin roles. Add a key in Settings.
+          </p>
+        </div>
+
+        <div class="section">
+          <div class="section__head"><h2>Machinery</h2></div>
+          <div class="grid grid--2" id="machinery"></div>
+        </div>
+      </div>
+    </section>
+
+    {# =========================== AGENTS ============================ #}
+    <section class="view view--scroll" id="view-agents">
+      <div class="page page--wide">
+        <div class="page__head">
+          <span class="page__eyebrow">supervisor &rarr; workers</span>
+          <h2 class="page__title">The team</h2>
+          <p class="page__lede">
+            A question spanning two policy areas is answered badly by one retrieval
+            over both, because the top-k fills with whichever area the corpus covers
+            better. So a supervisor splits it, delegates to the specialist whose
+            documents hold each half, and composes one reply &mdash; saying so
+            explicitly where two documents disagree, rather than silently picking one.
+          </p>
+        </div>
+
+        <div class="grid grid--2">
+          <div class="card">
+            <div class="card__head">
+              <h3>Supervisor graph</h3>
+              <span class="pill" id="supervisor-mode">compiled</span>
+            </div>
+            <div class="card__body">
+              <div class="graph-wrap">
+                <svg class="graph" id="graph-supervisor" role="img"
+                     aria-label="The supervisor graph"></svg>
+                <div class="graph__legend">
+                  <span><i style="background: var(--node-visited)"></i>consulted</span>
+                  <span><i style="background: var(--node-answer)"></i>composed</span>
+                  <span><i style="background: var(--node-escalate)"></i>escalated</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card__head"><h3>Last run&rsquo;s handoffs</h3></div>
+            <div class="card__body">
+              <div class="timeline" id="handoffs"></div>
+              <p class="empty" id="handoffs-empty">
+                Ask something that spans two policy areas &mdash; pay <em>and</em>
+                leave, benefits <em>and</em> conduct &mdash; and the handoffs land here.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Specialists</h2>
+            <span class="section__note">
+              each owns documents that actually exist in the knowledge base
+            </span>
+          </div>
+          <div class="workers" id="workers"></div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Tool registry</h2>
+            <span class="section__note">
+              what the model is offered, filtered by your role &mdash; the same
+              catalogue, through the same permission table
+            </span>
+          </div>
+          <div class="tools" id="tools"></div>
+        </div>
+
+        <div class="section">
+          <div class="section__head"><h2>When to split, and when not to</h2></div>
+          <div class="prose">
+            <div class="callout">
+              <span class="callout__title">Split</span>
+              <p>
+                Two or more policy areas that different documents cover. One
+                retrieval over &ldquo;how is my notice period paid, and does my
+                insurance continue?&rdquo; returns four chunks about notice and
+                none about insurance, so half the question goes unanswered with
+                no sign that it did.
+              </p>
+            </div>
+            <div class="callout callout--warn">
+              <span class="callout__title">Do not split</span>
+              <p>
+                A single question with several clauses, or one asking for a number
+                and its deadline. Splitting those buys an extra retrieval and an
+                extra generation to answer the same thing twice &mdash; and two
+                independently composed halves is how an answer ends up
+                contradicting itself.
+              </p>
+            </div>
+            <p>
+              The decision is a structured call with a safe default, and the safe
+              default is <strong>do not split</strong>. A wrongly split question
+              costs latency; a wrongly merged one costs the employee half their
+              answer, but it reads as complete, which is the worse failure.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {# ========================== PIPELINE =========================== #}
+    <section class="view view--scroll" id="view-pipeline">
+      <div class="page">
+        <div class="page__head">
+          <span class="page__eyebrow">measured, not asserted</span>
+          <h2 class="page__title">How it works</h2>
+          <p class="page__lede">
+            Every number on this page was measured in this repository and appears
+            identically in the README. It is the one screen written for a reader
+            who cannot check it against the code, which is what makes a stale
+            figure here worse than a stale figure anywhere else.
+          </p>
+        </div>
+
+        <div class="numbers">
+          <div class="number"><b>11</b><span>policy documents</span></div>
+          <div class="number"><b>31</b><span>indexed chunks</span></div>
+          <div class="number"><b>9</b><span>policy areas covered</span></div>
+          <div class="number"><b>0.15</b><span>similarity gate (raw cosine)</span></div>
+          <div class="number"><b>21/21</b><span>labelled routing + grading decisions</span></div>
+          <div class="number"><b>652</b><span>offline tests, zero lint findings</span></div>
+          <div class="number"><b>14/14</b><span>labelled complexity classifications</span></div>
+        </div>
+
+        <div class="prose">
+          <h2>Retrieval</h2>
+          <p>
+            Documents are chunked at 1,000 characters with 150 of overlap, markdown
+            split on headings first so a chunk begins at its section title. Each
+            chunk carries <code>source</code>, <code>title</code>,
+            <code>doc_id</code>, <code>doc_type</code>, <code>department</code>,
+            <code>origin</code> and <code>ingested_on</code> &mdash; the metadata
+            retrieval filters on. Chunk ids are keyed on position rather than
+            content, so an edited chunk updates in place instead of leaving its
+            previous version behind as a second vector.
+          </p>
+          <p>
+            Three retrieval modes, resolved at startup from what the deployment has
+            keys for: <strong>dense</strong> (Pinecone, cosine),
+            <strong>lexical</strong> (BM25 over the same documents on disk, no keys
+            and no network), and <strong>hybrid</strong>, which fuses the two with
+            reciprocal rank fusion and then re-ranks. RRF fuses by <em>rank</em>
+            rather than by score on purpose: a cosine similarity and a BM25 score
+            are not on the same scale, and no amount of normalisation makes them
+            comparable across queries.
+          </p>
+
+          <div class="callout">
+            <span class="callout__title">The gate is an out-of-domain filter, not a relevance grader</span>
+            <p>
+              Measured over a 12-question evaluation: out-of-domain questions peaked
+              at <strong>0.099</strong>, while the lowest-scoring correct-source
+              chunk was <strong>0.171</strong>. 0.15 sits in that gap. It cannot
+              separate right-document from wrong-document &mdash; a wrong-source
+              chunk has scored as high as <strong>0.521</strong> &mdash; so judging
+              whether evidence actually answers the question stays the model&rsquo;s
+              job. Re-measured when the corpus grew from 6 documents to 11:
+              out-of-domain still peaked at <strong>0.078</strong>, so 0.15 still holds.
+            </p>
+          </div>
+
+          <p>
+            The gate and the LLM grader are complementary rather than redundant.
+            &ldquo;Quokka grooming sabbatical&rdquo; clears the gate &mdash; it looks
+            lexically like leave policy &mdash; and the grader catches it.
+            &ldquo;What is the capital of France?&rdquo; never reaches the grader at
+            all. Removing either one opens a hole.
+          </p>
+
+          <h2>RAG, fine-tuning, or a long context?</h2>
+          <p>
+            All three are ways to get company facts into an answer, and this product
+            needs the one where the facts can change on a Tuesday afternoon and be
+            cited afterwards.
+          </p>
+          <div class="table-wrap" style="margin: 16px 0">
+            <table class="table">
+              <thead><tr>
+                <th>Approach</th><th class="wrap">Why not here</th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td>Fine-tuning</td>
+                  <td class="wrap">
+                    Teaches style and format, not facts you can cite. A policy edit
+                    means a retraining run, the old answer stays in the weights, and
+                    nothing can show the employee the paragraph it came from.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Whole corpus in context</td>
+                  <td class="wrap">
+                    Works at this size (11 documents is a few tens of thousands of
+                    tokens) and stops working at the size an HR corpus actually
+                    reaches. It also pays for the whole handbook on every greeting,
+                    and attention degrades well before the context limit does.
+                  </td>
+                </tr>
+                <tr>
+                  <td><strong>Retrieval</strong></td>
+                  <td class="wrap">
+                    A policy edit is an ingest. Cost is bounded by <em>k</em> rather
+                    than by corpus size. Every answer carries the documents it rests
+                    on, which is the part an HR answer cannot do without.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2>The eleven stages around the graph</h2>
+          <p>
+            The graph answers the question. The pipeline decides whether it should
+            be answered, whether it already has been, which model should do it, and
+            what has to be true of the answer before anyone sees it.
+          </p>
+          <ol>
+            <li><strong>Input guard</strong> &mdash; refuse, or redact and carry on.</li>
+            <li><strong>Semantic cache</strong> &mdash; an answer already given to this question.</li>
+            <li><strong>Model routing</strong> &mdash; complexity to tier to model id.</li>
+            <li><strong>Orchestration</strong> &mdash; graph, ReAct, or supervisor.</li>
+            <li><strong>Run</strong> &mdash; streamed stage by stage.</li>
+            <li><strong>Generation fallback</strong> &mdash; evidence but no model: extract rather than apologise.</li>
+            <li><strong>Output guard</strong> &mdash; redact what the model echoed; flag the rest.</li>
+            <li><strong>Accounting</strong> &mdash; tokens, projected cost, budget report.</li>
+            <li><strong>Cache store</strong> &mdash; only an answer worth repeating.</li>
+          </ol>
+          <p>
+            The order is the design. A guard after the cache could poison it; a
+            router before the cache pays for a classification it did not need; an
+            output guard before generation guards nothing.
+          </p>
+
+          <div class="callout callout--warn">
+            <span class="callout__title">Two things are the deployer&rsquo;s decision</span>
+            <p>
+              The audit log is SQLite on a volume, so a platform with an ephemeral
+              filesystem loses it on every redeploy &mdash; for an HR audit trail
+              that is the failure the log exists to prevent. And
+              <code>/api/chat</code> is unauthenticated by design, so a public URL
+              needs a rate limit in front of it. Both are in the README&rsquo;s
+              deployment section; neither is something to quietly fix in a Dockerfile.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    {# ========================= KNOWLEDGE =========================== #}
+    <section class="view view--scroll" id="view-knowledge">
+      <div class="page">
+        <div class="page__head">
+          <span class="page__eyebrow">hr &amp; admin</span>
+          <h2 class="page__title">Knowledge base</h2>
+          <p class="page__lede">
+            Whoever can upload here can change what the company&rsquo;s policy
+            appears to say, which is why this is gated. A single-file upload never
+            prunes: pruning reconciles a namespace against a directory, which for
+            one file would delete the rest of the corpus.
+          </p>
+        </div>
+
+        <div class="card card--pad">
+          <div class="drop" id="drop" tabindex="0" role="button"
+               aria-label="Choose a document to upload">
+            <input type="file" id="file" accept=".md,.markdown,.txt,.pdf,.docx" hidden />
+            <span class="drop__icon" aria-hidden="true">&#128196;</span>
+            <span class="drop__title">Drop a policy document, or click to choose</span>
+            <span class="drop__hint">Markdown, plain text, PDF or DOCX</span>
+            <p class="drop__file" id="drop-file" hidden></p>
+          </div>
+
+          <div style="display:flex; gap:12px; align-items:flex-end; margin-top:18px; flex-wrap:wrap">
+            <div class="field" style="flex:1 1 200px">
+              <label class="field__label" for="department">Department</label>
+              <input class="input" type="text" id="department" value="general" maxlength="64" />
+              <span class="field__hint">
+                Becomes chunk metadata and a retrieval filter value. Lower case,
+                digits, dot, dash or underscore.
+              </span>
+            </div>
+            <button class="btn btn--primary" id="do-upload" disabled>
+              <svg width="16" height="16"><use href="#i-upload"/></svg> Index it
+            </button>
+          </div>
+        </div>
+
+        <div class="callout" style="margin-top:20px">
+          <span class="callout__title">An ingest drops the answer cache</span>
+          <p>
+            A new document can change the answer to a question that mentions none of
+            its words, so a time-based expiry is not enough &mdash; fifteen minutes
+            of serving superseded policy is exactly what this must not do.
+          </p>
+        </div>
+
+        <div class="receipts" id="receipts"></div>
+      </div>
+    </section>
+
+    {# ========================= APPROVALS =========================== #}
+    <section class="view view--scroll" id="view-approvals">
+      <div class="page">
+        <div class="page__head">
+          <span class="page__eyebrow">human in the loop</span>
+          <h2 class="page__title">Approval queue</h2>
+          <p class="page__lede">
+            An agent that can raise a ticket can raise two. Anything side-effecting
+            stops here first and the agent tells the employee it has stopped,
+            rather than working around it. Decisions are single-shot: two people
+            clicking at once must not be last-write-wins on something that has
+            already happened.
+          </p>
+          <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap">
+            <button class="btn btn--sm" id="approvals-refresh">
+              <svg width="14" height="14"><use href="#i-refresh"/></svg> Refresh
+            </button>
+            <span class="pill" id="approvals-stats">—</span>
+          </div>
+        </div>
+
+        <div class="approvals" id="approvals"></div>
+        <p class="empty" id="approvals-empty">Nothing is waiting for a person.</p>
+      </div>
+    </section>
+
+    {# =========================== AUDIT ============================= #}
+    <section class="view view--scroll" id="view-audit">
+      <div class="page page--wide">
+        <div class="page__head">
+          <span class="page__eyebrow">admin only</span>
+          <h2 class="page__title">Audit log</h2>
+          <p class="page__lede">
+            Every row is an employee&rsquo;s question and the answer they were given,
+            which is HR-sensitive by definition &mdash; and is the reason this is an
+            endpoint behind a key rather than a file anyone with shell access can
+            read. By default the question is stored in its redacted form.
+          </p>
+          <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap">
+            <button class="btn btn--sm" id="audit-refresh">
+              <svg width="14" height="14"><use href="#i-refresh"/></svg> Refresh
+            </button>
+            <select class="select" id="audit-filter" style="width:auto">
+              <option value="">Every source</option>
+              <option value="private_kb">Private KB</option>
+              <option value="web_search">Web search</option>
+              <option value="direct">Direct</option>
+              <option value="insufficient_evidence">Insufficient evidence</option>
+              <option value="escalated">Escalated</option>
+              <option value="error">Error</option>
+            </select>
+            <span class="pill" id="audit-total">—</span>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table">
+            <thead><tr>
+              <th>#</th><th>Asked</th><th class="wrap">Question</th>
+              <th>Source</th><th>Mode</th><th>Model</th>
+              <th class="num">Chunks</th><th class="num">ms</th><th>Flags</th>
+            </tr></thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+        <p class="empty" id="audit-empty">Nothing logged yet.</p>
+      </div>
+    </section>
+
+    {# ========================== SETTINGS =========================== #}
+    <section class="view view--scroll" id="view-settings">
+      <div class="page">
+        <div class="page__head">
+          <span class="page__eyebrow">this browser only</span>
+          <h2 class="page__title">Keys &amp; configuration</h2>
+          <p class="page__lede">
+            Both keys below are held in <code>sessionStorage</code> and sent as
+            request headers. Session scope, not local: they are credentials, and a
+            shared machine should not keep them after the tab closes.
+          </p>
+        </div>
+
+        <div class="grid grid--2">
+          <div class="card card--glow" data-byok-only>
+            <div class="card__head">
+              <h3>Use your own model</h3>
+              <span class="pill" id="byok-state">not set</span>
+            </div>
+            <div class="card__body">
+              <p style="color:var(--text-dim); font-size:13.5px">
+                Paste an OpenAI or Groq key and your questions are answered on your
+                account, at whatever model you pick, with no shared-key rate limit.
+                The key is used to build one chat client and is never written to the
+                audit log, a span, a log line or the vector index &mdash; and it
+                never reaches Pinecone or the web search, only the chat model.
+              </p>
+              <div class="field" style="margin-top:14px">
+                <label class="field__label" for="provider">Provider</label>
+                <select class="select" id="provider">
+                  <option value="">Detect from the key</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="groq">Groq</option>
+                </select>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <label class="field__label" for="provider-model">Model</label>
+                <select class="select" id="provider-model">
+                  <option value="">Provider default</option>
+                </select>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <label class="field__label" for="provider-key">API key</label>
+                <input class="input input--mono" type="password" id="provider-key"
+                       placeholder="sk-… or gsk_…" autocomplete="off" />
+                <span class="field__hint">
+                  Sent over HTTPS in a header, never in a URL. You are trusting this
+                  deployment with it for the length of your session.
+                </span>
+              </div>
+              <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap">
+                <button class="btn btn--primary" id="byok-save">Use this key</button>
+                <button class="btn btn--ghost" id="byok-clear">Forget it</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__head">
+              <h3>Staff access</h3>
+              <span class="pill" id="role-state">employee</span>
+            </div>
+            <div class="card__body">
+              <p style="color:var(--text-dim); font-size:13.5px">
+                An HR key unlocks the knowledge base and the approval queue. An
+                admin key additionally unlocks the audit log &mdash; which HR
+                needing to upload a policy is not a reason to grant.
+              </p>
+              <div class="field" style="margin-top:14px">
+                <label class="field__label" for="staff-role">Role</label>
+                <select class="select" id="staff-role">
+                  <option value="admin">Admin</option>
+                  <option value="hr">HR</option>
+                </select>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <label class="field__label" for="staff-key">Key</label>
+                <input class="input input--mono" type="password" id="staff-key"
+                       placeholder="X-Admin-Key or X-HR-Key" autocomplete="off" />
+              </div>
+              <div style="display:flex; gap:8px; margin-top:14px; flex-wrap:wrap">
+                <button class="btn btn--primary" id="staff-save">Save key</button>
+                <button class="btn btn--ghost" id="staff-clear">Forget it</button>
+              </div>
+              <div class="field" style="margin-top:16px">
+                <span class="field__label">Permissions you hold</span>
+                <div id="permissions" style="display:flex; flex-wrap:wrap; gap:5px; margin-top:6px"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Answer with</h2>
+            <span class="section__note">
+              per question, so the same question can be compared three ways
+            </span>
+          </div>
+          <div class="grid grid--4" id="mode-cards"></div>
+        </div>
+
+        <div class="section">
+          <div class="section__head">
+            <h2>Resolved configuration</h2>
+            <span class="section__note">
+              what this deployment actually settled on, from <code>/api/config</code>
+            </span>
+          </div>
+          <div class="card card--pad">
+            <dl class="kv" id="config-kv"></dl>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+{# --- Key dialog, reachable from the topbar ---------------------------- #}
+<dialog class="dialog" id="key-dialog">
+  <form method="dialog" class="dialog__body" id="key-form">
+    <h3>API key</h3>
+    <p id="key-dialog-text">
+      Add your own model key to answer on your account with no shared-key limit,
+      or a staff key to unlock the operator surfaces. Held in this tab only.
+    </p>
+    <div class="dialog__row">
+      <button class="btn btn--primary" value="settings" type="submit">Open settings</button>
+      <button class="btn btn--ghost" value="cancel" type="submit">Not now</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script type="module" src="/static/js/app.js?v={{ version }}"></script>
 </body>
 </html>
