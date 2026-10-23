@@ -647,7 +647,8 @@ Verify a change here the way it was verified: run the suite once normally, once 
 that import stops resolving.
 
 `test_the_compiled_graph_matches_the_documented_design` asserts the compiled edge set exactly. It
-is what keeps the README's mermaid diagram and `docs/agent-graph.md` honest, so update it
+is what keeps the mermaid diagram in `docs/engineering-notes.md` and `docs/agent-graph.md`
+honest, so update it
 deliberately when the graph changes rather than loosening it.
 
 ## API notes
@@ -878,8 +879,8 @@ paths now enforce the production admin-key rule, because it moved into `create_a
 **Two things are the deployer's decision, not the image's.** The audit log is SQLite on a volume, so
 a platform with an ephemeral filesystem loses it on every redeploy -- for an HR audit trail that is
 the failure the log exists to prevent. And `/api/chat` is unauthenticated by design, so a public URL
-with no rate limit in front of it is a bill waiting to happen. Both are in the README's *Deploying*
-section; neither is something to silently "fix" in the Dockerfile.
+with no rate limit in front of it is a bill waiting to happen. Both are in *Deploying* in
+`docs/engineering-notes.md`; neither is something to silently "fix" in the Dockerfile.
 
 ## The pipeline around the graph
 
@@ -1169,7 +1170,7 @@ idempotency ledger are per-instance there for the same structural reason.
 ## The build plan
 
 [step.md](step.md) is the user's 16-step plan for this project; steps 1–9 and 16 are done. It
-deviates from the code in three ways, all deliberate and all recorded in the README's Roadmap. Do
+deviates from the code in three ways, all deliberate and all recorded in the Roadmap in `docs/engineering-notes.md`. Do
 not "fix" the code to match the plan without asking.
 
 - **Providers.** The plan names OpenAI embeddings and model; this runs local `all-MiniLM-L6-v2` and
